@@ -308,6 +308,11 @@ Find the existing row and update any changed fields in-place.
 
 ## Step 6 — Create Pull Request
 
+This is a repository-owned `gh-aw` catalog maintenance workflow, covered by the
+exemption in `AGENTS.md`: do not check anyone's open-PR count or request
+confirmation under that rule. After validation passes and changes are committed,
+use `safeoutputs.create_pull_request` to request the draft PR.
+
 Create a pull request with the changes. Use this branch naming convention:
 
 - **New preset:** `add-<preset-id>-preset`

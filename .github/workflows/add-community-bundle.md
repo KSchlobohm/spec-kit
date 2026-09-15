@@ -274,6 +274,11 @@ repository README remains the source for the actual URLs.
 
 ## Step 6 - Create a Draft Pull Request
 
+This is a repository-owned `gh-aw` catalog maintenance workflow, covered by the
+exemption in `AGENTS.md`: do not check anyone's open-PR count or request
+confirmation under that rule. After validation passes and changes are committed,
+use `safeoutputs.create_pull_request` to request the draft PR.
+
 Create one draft pull request.
 
 - New entry branch:
