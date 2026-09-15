@@ -1098,6 +1098,67 @@ class TestCommandStep:
         assert result.output["integration"] == "claude"
         assert result.output["input"]["args"] == "login"
 
+    def test_execute_reports_dispatch_unsupported_distinctly_from_cli_missing(self):
+        """A ``requires_cli: False`` integration (e.g. Bob) with a genuinely
+        installed executable must be reported as "dispatch unsupported", not
+        the misleading "CLI not found or not installed" — see issue #2.
+
+        ``build_exec_args()`` returns ``None`` for such integrations
+        regardless of whether their executable is on PATH, so the two
+        failure modes ("dispatch not implemented" vs. "executable missing")
+        must not collapse into the same message.
+        """
+        from unittest.mock import patch
+        from specify_cli.workflows.steps.command import CommandStep
+        from specify_cli.workflows.base import StepContext, StepStatus
+
+        step = CommandStep()
+        ctx = StepContext(default_integration="bob")
+        config = {
+            "id": "test",
+            "command": "speckit.specify",
+            "input": {"args": "hello"},
+        }
+        # Simulate the 'bob' executable being genuinely installed.
+        with patch(
+            "specify_cli.workflows.steps.command.shutil.which",
+            lambda name: "/usr/bin/bob" if name == "bob" else None,
+        ):
+            result = step.execute(config, ctx)
+
+        assert result.status == StepStatus.FAILED
+        assert result.output["dispatched"] is False
+        assert "does not support non-interactive CLI dispatch" in (result.error or "")
+        assert "CLI not found or not installed" not in (result.error or "")
+
+    def test_execute_reports_cli_not_found_when_executable_truly_missing(self):
+        """Regression guard: a ``requires_cli: True`` integration whose
+        executable is genuinely absent from PATH must still report the
+        original "CLI not found or not installed" message.
+        """
+        from unittest.mock import patch
+        from specify_cli.workflows.steps.command import CommandStep
+        from specify_cli.workflows.base import StepContext, StepStatus
+
+        step = CommandStep()
+        ctx = StepContext(default_integration="claude")
+        config = {
+            "id": "test",
+            "command": "speckit.specify",
+            "input": {"args": "hello"},
+        }
+        with patch(
+            "specify_cli.workflows.steps.command.shutil.which", return_value=None
+        ):
+            result = step.execute(config, ctx)
+
+        assert result.status == StepStatus.FAILED
+        assert result.output["dispatched"] is False
+        assert "CLI not found or not installed" in (result.error or "")
+        assert "does not support non-interactive CLI dispatch" not in (
+            result.error or ""
+        )
+
     def test_per_step_integration_config_is_resolved_and_isolated(
         self, tmp_path, monkeypatch
     ):
@@ -1704,6 +1765,61 @@ class TestPromptStep:
         assert result.output["prompt"] == "Review auth.py for security issues"
         assert result.output["integration"] == "claude"
         assert result.output["dispatched"] is False
+
+    def test_execute_reports_dispatch_unsupported_distinctly_from_cli_missing(self):
+        """A ``requires_cli: False`` integration (e.g. Bob) with a genuinely
+        installed executable must be reported as "dispatch unsupported", not
+        the misleading "CLI not found or not installed" — see issue #2.
+        """
+        from unittest.mock import patch
+        from specify_cli.workflows.steps.prompt import PromptStep
+        from specify_cli.workflows.base import StepContext, StepStatus
+
+        step = PromptStep()
+        ctx = StepContext(default_integration="bob")
+        config = {
+            "id": "review",
+            "type": "prompt",
+            "prompt": "Summarize the codebase",
+        }
+        with patch(
+            "specify_cli.workflows.steps.prompt.shutil.which",
+            lambda name: "/usr/bin/bob" if name == "bob" else None,
+        ):
+            result = step.execute(config, ctx)
+
+        assert result.status == StepStatus.FAILED
+        assert result.output["dispatched"] is False
+        assert "does not support non-interactive CLI dispatch" in (result.error or "")
+        assert "CLI not found or not installed" not in (result.error or "")
+
+    def test_execute_reports_cli_not_found_when_executable_truly_missing(self):
+        """Regression guard: a ``requires_cli: True`` integration whose
+        executable is genuinely absent from PATH must still report the
+        original "CLI not found or not installed" message.
+        """
+        from unittest.mock import patch
+        from specify_cli.workflows.steps.prompt import PromptStep
+        from specify_cli.workflows.base import StepContext, StepStatus
+
+        step = PromptStep()
+        ctx = StepContext(default_integration="claude")
+        config = {
+            "id": "review",
+            "type": "prompt",
+            "prompt": "Summarize the codebase",
+        }
+        with patch(
+            "specify_cli.workflows.steps.prompt.shutil.which", return_value=None
+        ):
+            result = step.execute(config, ctx)
+
+        assert result.status == StepStatus.FAILED
+        assert result.output["dispatched"] is False
+        assert "CLI not found or not installed" in (result.error or "")
+        assert "does not support non-interactive CLI dispatch" not in (
+            result.error or ""
+        )
 
     def test_execute_non_string_integration_fails_cleanly(self):
         """A non-string integration must FAIL the step cleanly, not crash with

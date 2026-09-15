@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from specify_cli.integrations.base import DispatchNotSupportedError
 from specify_cli.workflows.base import StepBase, StepContext, StepResult, StepStatus
 from specify_cli.workflows.expressions import evaluate_expression
 
@@ -157,6 +158,18 @@ class CommandStep(StepBase):
                 integration_args,
                 integration_options,
             )
+        except DispatchNotSupportedError as exc:
+            output["exit_code"] = 1
+            output["dispatched"] = False
+            return StepResult(
+                status=StepStatus.FAILED,
+                output=output,
+                error=(
+                    f"Cannot dispatch command {command!r}: {exc} "
+                    f"This integration does not support non-interactive CLI "
+                    f"dispatch, regardless of whether its CLI tool is installed."
+                ),
+            )
         except ValueError as exc:
             output["exit_code"] = 1
             output["dispatched"] = False
@@ -240,11 +253,27 @@ class CommandStep(StepBase):
             integration_options=integration_options,
         )
 
+        # ``build_exec_args()`` returns ``None`` when the integration does not
+        # implement non-interactive CLI dispatch at all (e.g. IDE/skills-only
+        # integrations with ``requires_cli: False``, like Bob) — regardless of
+        # whether the integration's executable happens to be on PATH. Raise
+        # distinctly here so execute() can report "dispatch unsupported"
+        # instead of the misleading "CLI not found or not installed" (the
+        # previous behavior fell through to the executable check below, which
+        # can pass via ``shutil.which(impl.key)`` even though dispatch is
+        # architecturally unsupported, then hit the same message anyway once
+        # ``dispatch_command`` raised).
+        if exec_args is None:
+            raise DispatchNotSupportedError(
+                f"Integration {impl.key!r} does not support non-interactive "
+                f"CLI dispatch."
+            )
+
         # Check if the CLI tool is actually installed.
         # Try the integration key first (covers most agents), then fall back
         # to exec_args[0] for agents whose executable differs.
         cli_path = shutil.which(impl.key)
-        fallback_cli_path = shutil.which(exec_args[0]) if exec_args else None
+        fallback_cli_path = shutil.which(exec_args[0])
         if cli_path is None and fallback_cli_path is None:
             return None
 
@@ -259,6 +288,8 @@ class CommandStep(StepBase):
                 integration_args=integration_args,
                 integration_options=integration_options,
             )
+        except DispatchNotSupportedError:
+            raise
         except (NotImplementedError, OSError):
             return None
 
