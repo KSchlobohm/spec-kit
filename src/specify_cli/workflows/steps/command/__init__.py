@@ -157,7 +157,7 @@ class CommandStep(StepBase):
                 integration_args,
                 integration_options,
             )
-        except ValueError as exc:
+        except (ValueError, NotImplementedError) as exc:
             output["exit_code"] = 1
             output["dispatched"] = False
             return StepResult(
@@ -239,6 +239,11 @@ class CommandStep(StepBase):
             integration_args=integration_args,
             integration_options=integration_options,
         )
+
+        if not exec_args:
+            raise NotImplementedError(
+                f"Integration {integration_key!r} does not support non-interactive CLI dispatch."
+            )
 
         # Check if the CLI tool is actually installed.
         # Try the integration key first (covers most agents), then fall back
