@@ -448,7 +448,7 @@ def test_bug_test_workflow_provisions_python_dependencies():
     steps = compiled["jobs"]["agent"]["steps"]
 
     assert source["network"] == {
-        "allowed": ["defaults", "pypi.org", "files.pythonhosted.org"]
+        "allowed": ["defaults", "github.com", "pypi.org", "files.pythonhosted.org"]
     }
     assert '"pypi.org"' in compiled_text
     assert '"files.pythonhosted.org"' in compiled_text
@@ -485,6 +485,107 @@ def test_bug_test_workflow_provisions_python_dependencies():
     assert 'UV_BIN="$(command -v uv)"' in install
     assert "PIP_SUBCOMMAND=pip" in install
     assert '"$UV_BIN" "$PIP_SUBCOMMAND" install --system -e ".[test]"' in install
+
+
+def test_bug_test_network_allows_only_required_github_host():
+    _, _, source, compiled = _bug_workflow("bug-test")
+    assert source["network"]["allowed"] == [
+        "defaults", "github.com", "pypi.org", "files.pythonhosted.org"
+    ]
+    steps = compiled["jobs"]["agent"]["steps"]
+    domains = set(
+        _workflow_step(steps, "Ingest agent output")["env"][
+            "GH_AW_ALLOWED_DOMAINS"
+        ].split(",")
+    )
+    assert {"github.com", "pypi.org", "files.pythonhosted.org"} <= domains
+    assert all("*" not in domain for domain in domains)
+    assert not {
+        "*", "*.github.com", "gitlab.com", "example.com", "localhost",
+        "127.0.0.1", "::1", "10.0.0.1", "172.16.0.1", "192.168.0.1",
+        "169.254.169.254", "metadata.google.internal", "metadata.azure.com",
+    } & domains
+    firewall_step = next(
+        step for step in steps if r'\"allowDomains\":[' in step.get("run", "")
+    )
+    network_match = re.search(
+        r'\\"network\\":(\{.*?\}),\\"apiProxy\\"', firewall_step["run"]
+    )
+    assert network_match is not None
+    network = json.loads(network_match[1].replace(r'\"', '"'))
+    assert set(network["allowDomains"]) == domains
+    assert network["isolation"] is True
+
+
+def test_bug_test_distinguishes_missing_fix_from_failed_discovery():
+    source_text, _, _, _ = _bug_workflow("bug-test")
+    selection = " ".join(
+        source_text.split("## Step 2", 1)[1].split("## Step 3", 1)[0].split()
+    )
+    for clause in (
+        (
+            "Use the current-checkout fallback only after successful lookups "
+            "establish that neither a linked PR nor a named fix branch exists."
+        ),
+        (
+            "A failed API lookup or Git discovery command is not evidence of "
+            "absence; an empty filtered result after a failed command is not zero matches."
+        ),
+        (
+            "If discovery, fetch, or checkout fails, record the command/tool, its "
+            "original exit code or error, and the diagnostic as an **environment/setup failure**."
+        ),
+        (
+            "Skip test execution and proceed to Steps 6–7 with an `inconclusive` "
+            "report and `tests-inconclusive`; do not silently fall back to the "
+            "current checkout or another fix source."
+        ),
+        "Only record a fix as tested after its checkout succeeds.",
+        (
+            "For Git discovery/fetch/checkout, dependency installation, and test "
+            "execution, capture stdout+stderr and the original command exit code "
+            "**before** filtering or trimming output."
+        ),
+        (
+            "Inspect discovery output for matches only after the discovery "
+            "command succeeds; retain failure diagnostics unfiltered."
+        ),
+        "Do not put a log-filtering pipeline inside the command being captured.",
+    ):
+        assert clause in selection
+
+
+@requires_bash
+@pytest.mark.parametrize("errexit", [False, True], ids=["no-errexit", "errexit"])
+@pytest.mark.parametrize("exit_code", [0, 17, 128], ids=["success", "test-failure", "git-failure"])
+def test_bug_test_documented_capture_preserves_output_and_exit(tmp_path, errexit, exit_code):
+    source_text, _, _, _ = _bug_workflow("bug-test")
+    evidence = source_text.split("### Preserve Command Evidence", 1)[1]
+    script = evidence.split("```bash\n", 1)[1].split("```", 1)[0]
+    env = {**os.environ, "RUNNER_TEMP": tmp_path.as_posix()}
+    command = [
+        "bash", "-c",
+        f"printf 'stdout evidence\\n'; printf 'stderr diagnostic\\n' >&2; exit {exit_code}",
+    ]
+    options = ["-euo", "pipefail"] if errexit else []
+    result = subprocess.run(
+        ["bash", *options, "-c", script, "--", *command],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == exit_code, result.stderr
+    assert result.stdout.splitlines() == [
+        "stdout evidence", "stderr diagnostic", f"Command exit code: {exit_code}"
+    ]
+    assert (tmp_path / "command.log").read_text() == (
+        "stdout evidence\nstderr diagnostic\n"
+    )
+    legacy = subprocess.run(
+        ["bash", "-c", '"$@" 2>&1 | tail -n 30', "--", *command],
+        capture_output=True, text=True, check=False,
+    )
+    assert legacy.returncode == 0
+    if exit_code:
+        assert result.returncode != legacy.returncode
 
 
 @pytest.mark.parametrize("name", ["bug-fix", "bug-test"])
