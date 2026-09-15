@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from specify_cli.integrations.base import DispatchNotSupportedError
 from specify_cli.workflows.base import StepBase, StepContext, StepResult, StepStatus
 from specify_cli.workflows.expressions import evaluate_expression
 
@@ -100,11 +101,29 @@ class PromptStep(StepBase):
 
         # Attempt CLI dispatch
         timeout = config.get("timeout", 300)
-        dispatch_result = self._try_dispatch(
-            prompt, integration, model, context, timeout=timeout
-        )
+        try:
+            dispatch_result = self._try_dispatch(
+                prompt, integration, model, context, timeout=timeout
+            )
+        except DispatchNotSupportedError as exc:
+            output = {
+                "prompt": prompt,
+                "integration": integration,
+                "model": model,
+                "exit_code": 1,
+                "dispatched": False,
+            }
+            return StepResult(
+                status=StepStatus.FAILED,
+                output=output,
+                error=(
+                    f"Cannot dispatch prompt: {exc} This integration does not "
+                    f"support non-interactive CLI dispatch, regardless of "
+                    f"whether its CLI tool is installed."
+                ),
+            )
 
-        output: dict[str, Any] = {
+        output = {
             "prompt": prompt,
             "integration": integration,
             "model": model,
@@ -201,6 +220,18 @@ class PromptStep(StepBase):
             return None
 
         exec_args = impl.build_exec_args(prompt, model=model, output_json=False)
+
+        # ``build_exec_args()`` returns ``None`` when the integration does not
+        # implement non-interactive CLI dispatch at all (e.g. IDE/skills-only
+        # integrations with ``requires_cli: False``, like Bob) — regardless of
+        # whether the integration's executable happens to be on PATH. Raise
+        # distinctly here so execute() can report "dispatch unsupported"
+        # instead of the misleading "CLI not found or not installed".
+        if exec_args is None:
+            raise DispatchNotSupportedError(
+                f"Integration {impl.key!r} does not support non-interactive "
+                f"CLI dispatch."
+            )
 
         # Check if the CLI tool is actually installed.
         # Try the integration key first (covers most agents), then fall back

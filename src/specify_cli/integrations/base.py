@@ -96,6 +96,25 @@ class IntegrationOption:
 
 
 # ---------------------------------------------------------------------------
+# DispatchNotSupportedError
+# ---------------------------------------------------------------------------
+
+
+class DispatchNotSupportedError(NotImplementedError):
+    """Raised when an integration cannot dispatch commands non-interactively.
+
+    Distinct from a genuinely missing CLI executable (an ``OSError``/
+    ``shutil.which`` miss): this signals that ``build_exec_args()`` returned
+    ``None`` because the integration does not implement non-interactive CLI
+    dispatch at all (e.g. an IDE/skills-only integration with
+    ``requires_cli: False``), regardless of whether its executable is
+    installed. Callers (workflow ``command``/``prompt`` steps) catch this
+    separately from ``OSError`` so they can report "dispatch unsupported"
+    instead of the misleading "CLI not found or not installed".
+    """
+
+
+# ---------------------------------------------------------------------------
 # IntegrationBase — abstract base class
 # ---------------------------------------------------------------------------
 
@@ -417,7 +436,7 @@ class IntegrationBase(ABC):
                 f"Integration {self.key!r} does not support CLI dispatch. "
                 f"Override build_exec_args() to enable it."
             )
-            raise NotImplementedError(msg)
+            raise DispatchNotSupportedError(msg)
 
         # Windows: ``subprocess.run`` calls ``CreateProcess`` which does not
         # consult ``PATHEXT``, so a bare command name like ``cursor-agent``
