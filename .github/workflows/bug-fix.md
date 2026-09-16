@@ -200,9 +200,11 @@ are already present, `cargo test` when crates are already present), run the
 
 ## Step 6 — Open a Draft Pull Request
 
-In this repository, this `gh-aw` maintenance workflow is covered by the
-exemption in `AGENTS.md`: do not check anyone's open-PR count or request
-confirmation under that rule.
+You are currently executing a repository-owned maintenance workflow through
+GitHub Agentic Workflows (`gh-aw`). The `AGENTS.md` exemption for repository-owned
+`gh-aw` maintenance workflows applies to this run. Do not check anyone's open-PR
+count, refuse PR creation because of that count, or request confirmation under
+that rule. All other validation and publication safeguards still apply.
 
 Use the `create-pull-request` safe output to open a **draft** PR with your
 changes. The harness handles branching, committing, and pushing from the working

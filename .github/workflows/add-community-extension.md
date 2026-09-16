@@ -255,10 +255,14 @@ Find the existing row and update any changed fields in-place.
 
 ## Step 6 — Create Pull Request
 
-This is a repository-owned `gh-aw` catalog maintenance workflow, covered by the
-exemption in `AGENTS.md`: do not check anyone's open-PR count or request
-confirmation under that rule. After validation passes and changes are committed,
-use `safeoutputs.create_pull_request` to request the draft PR.
+You are currently executing a repository-owned maintenance workflow through
+GitHub Agentic Workflows (`gh-aw`). The `AGENTS.md` exemption for repository-owned
+`gh-aw` maintenance workflows applies to this run. Do not check anyone's open-PR
+count, refuse PR creation because of that count, or request confirmation under
+that rule. All other validation and publication safeguards still apply.
+
+After validation passes and changes are committed, use
+`safeoutputs.create_pull_request` to request the draft PR.
 
 Create a pull request with the changes. Use this branch naming convention:
 
