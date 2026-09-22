@@ -248,8 +248,9 @@ prevents a required check, validation is blocked by the workflow environment:
 If there are no environment blockers and a completed check found a submission defect:
 1. Add a comment on the issue listing each failed check with a clear explanation
    of what's wrong and how to fix it
-2. Add the `validation-failed` label
-3. **Stop — do not proceed further**
+2. Remove `validation-passed`
+3. Add the `validation-failed` label
+4. **Stop — do not proceed further**
 
 #### Passed
 

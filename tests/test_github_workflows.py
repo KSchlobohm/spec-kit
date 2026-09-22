@@ -661,6 +661,7 @@ def test_community_archive_permission_failures_are_not_submission_failures(kind)
         "If there are no environment blockers and a completed check found a "
         "submission defect:"
     )
+    assert "Remove `validation-passed`" in failed
     assert " ".join(passed.split()).startswith(
         "If there are no environment blockers and every required check completed "
         "and passed:"
