@@ -14,6 +14,7 @@ engine:
     - --allow-url=https://github.com
     - --allow-url=https://codeload.github.com
     - --allow-url=https://release-assets.githubusercontent.com
+    - --allow-url=https://raw.githubusercontent.com
 
 tools:
   edit:
@@ -29,6 +30,7 @@ network:
     - github.com
     - codeload.github.com
     - release-assets.githubusercontent.com
+    - raw.githubusercontent.com
 
 permissions:
   contents: read

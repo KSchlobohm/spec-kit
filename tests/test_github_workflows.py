@@ -576,6 +576,7 @@ def test_community_archive_permissions_cover_tools_urls_and_firewall(kind):
         "github.com",
         "codeload.github.com",
         "release-assets.githubusercontent.com",
+        "raw.githubusercontent.com",
     ]
     args = [f"--allow-url=https://{domain}" for domain in domains]
     assert source["engine"] == {"id": "copilot", "args": args}
