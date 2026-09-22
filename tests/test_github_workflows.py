@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -353,7 +354,8 @@ def test_community_upgrade_uses_established_runtime_defaults(kind):
     assert metadata["compiler_version"] == "v0.88.7"
     assert metadata["engine_versions"] == {"copilot": "1.0.80"}
     assert metadata["strict"] is True
-    assert "engine" not in source
+    assert set(source["engine"]) == {"id", "args"}
+    assert source["engine"]["id"] == "copilot"
 
     info = _workflow_step(
         compiled["jobs"]["activation"]["steps"], "Generate agentic run info"
@@ -459,17 +461,19 @@ def test_community_upgrade_preserves_scoped_draft_pr_contract(
     expected_outputs = {
         "add_comment", "add_labels", "create_pull_request", "noop",
         "create_report_incomplete_issue", "missing_data", "missing_tool",
-        "report_incomplete",
+        "report_incomplete", "remove_labels",
     }
     expected_source_outputs = {
-        "add-comment", "add-labels", "create-pull-request", "noop", "threat-detection"
+        "add-comment", "add-labels", "create-pull-request", "noop",
+        "threat-detection", "remove-labels",
     }
-    if kind == "bundle":
-        expected_outputs.add("remove_labels")
-        expected_source_outputs.add("remove-labels")
-        assert outputs["remove_labels"]["allowed"] == source["safe-outputs"][
-            "remove-labels"
-        ]["allowed"] == ["validation-passed", "validation-failed", "needs-info"]
+    removable_labels = (
+        ["validation-passed", "validation-failed", "needs-info"]
+        if kind == "bundle" else ["validation-passed"]
+    )
+    assert outputs["remove_labels"]["allowed"] == source["safe-outputs"][
+        "remove-labels"
+    ]["allowed"] == removable_labels
     assert set(outputs) == expected_outputs
     assert set(source["safe-outputs"]) == expected_source_outputs
     assert outputs["add_comment"] == source["safe-outputs"]["add-comment"] == {"max": 2}
@@ -563,6 +567,82 @@ def test_community_submission_workflows_require_tag_pinned_download_urls():
                 "`https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>.zip`"
                 in source_text
             )
+
+
+@pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])
+def test_community_archive_permissions_cover_tools_urls_and_firewall(kind):
+    _, _, source, compiled = _agentic_workflow(f"add-community-{kind}")
+    domains = [
+        "github.com",
+        "codeload.github.com",
+        "release-assets.githubusercontent.com",
+    ]
+    args = [f"--allow-url=https://{domain}" for domain in domains]
+    assert source["engine"] == {"id": "copilot", "args": args}
+    assert source["network"] == {"allowed": ["defaults", *domains]}
+    assert {"curl", "sha256sum"} <= set(source["tools"]["bash"])
+
+    steps = compiled["jobs"]["agent"]["steps"]
+    execution = _workflow_step(steps, "Execute GitHub Copilot CLI")["run"]
+    for arg in args:
+        assert arg in execution
+    assert "shell(curl:*)" in execution
+    assert "shell(sha256sum)" in execution
+    for unrestricted in ("--allow-all-urls", "--allow-all-tools", "--yolo"):
+        assert unrestricted not in execution
+    assert re.search(r"--allow-all(?:\s|$)", execution) is None
+    assert re.findall(r"--allow-url[= ]([^\s'\"]+)", execution) == [
+        f"https://{domain}" for domain in domains
+    ]
+
+    firewall = next(
+        step["run"] for step in steps if r'\"allowDomains\":[' in step.get("run", "")
+    )
+    match = re.search(r'\\"network\\":(\{.*?\}),\\"apiProxy\\"', firewall)
+    assert match is not None
+    network = json.loads(match[1].replace(r'\"', '"'))
+    assert set(domains) <= set(network["allowDomains"])
+    assert all("*" not in domain for domain in network["allowDomains"])
+    assert not {
+        "example.com", "gitlab.com", "localhost", "127.0.0.1",
+        "169.254.169.254", "metadata.google.internal",
+    } & set(network["allowDomains"])
+    assert network["isolation"] is True
+
+
+@pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])
+def test_community_archive_instructions_require_direct_evidence(kind):
+    source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
+    command = re.search(r"```bash\n(curl [^\n]+)\n```", source_text)
+    assert command is not None
+    assert shlex.split(command[1]) == [
+        "curl", "--location", "--proto", "=https", "--proto-redir", "=https",
+        "--max-time", "60", "--silent", "--show-error",
+        "--write-out", "%{http_code}",
+        "--output", "/tmp/gh-aw/community-archive.zip", "VALIDATED_DOWNLOAD_URL",
+    ]
+    assert "sha256sum /tmp/gh-aw/community-archive.zip" in source_text
+    assert "Run the download and checksum as separate shell calls" in source_text
+    assert "Never execute downloaded content." in source_text
+    assert "repository/release metadata is not a" in source_text
+    assert "substitute for fetching the archive." in source_text
+    assert (
+        "Compute SHA-256 only after a successful download with final HTTP 200."
+        in source_text
+    )
+
+
+@pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])
+def test_community_archive_permission_failures_are_not_submission_failures(kind):
+    source_text, _, source, compiled = _agentic_workflow(f"add-community-{kind}")
+    assert "validation is blocked by the workflow environment" in source_text
+    assert "Do not ask the submitter to change a URL or resubmit solely" in source_text
+    assert "Do not add `validation-failed` or `needs-info` solely for an" in source_text
+    assert "Stop without editing catalog/docs files or opening a PR." in source_text
+    assert "If independent submission checks failed, report those separately" in source_text
+    assert "Remove `validation-passed`" in source_text
+    assert "validation-passed" in source["safe-outputs"]["remove-labels"]["allowed"]
+    assert "validation-passed" in _safe_output_config(compiled)["remove_labels"]["allowed"]
 
 
 def test_community_submission_allowed_files_do_not_include_other_catalogs_or_docs():
