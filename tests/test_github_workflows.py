@@ -615,6 +615,7 @@ def test_community_archive_instructions_require_direct_evidence(kind):
     source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
     command = re.search(r"```bash\n(curl [^\n]+)\n```", source_text)
     assert command is not None
+    assert command[1].endswith(" 'VALIDATED_DOWNLOAD_URL'")
     assert shlex.split(command[1]) == [
         "curl", "--location", "--proto", "=https", "--proto-redir", "=https",
         "--max-time", "60", "--silent", "--show-error",
