@@ -96,7 +96,6 @@ Read issue #${{ github.event.issue.number }} and extract these issue-form fields
 | Author | `author` | Yes |
 | Repository URL | `repository` | Yes |
 | Download URL | `download-url` | Yes |
-| SHA-256 | `sha256` | No |
 | Documentation URL | `documentation` | Yes |
 | License | `license` | Yes |
 | Required Spec Kit Version | `speckit-version` | Yes |
@@ -111,12 +110,14 @@ Read issue #${{ github.event.issue.number }} and extract these issue-form fields
 
 Issue-form values appear beneath headings matching their labels.
 
-Extract `submitted_sha256` from the submitted issue, not release metadata or the computed digest.
-Accept a `### SHA-256` heading (including `### SHA-256 (sha256)`) or the
-`sha256` field in the Proposed Catalog Entry. If both sources supply a checksum, they must agree
-after trimming whitespace and normalizing hexadecimal case. A supplied checksum
-must contain exactly 64 hexadecimal characters; malformed or conflicting values
-are submission failures, not an absent checksum.
+The optional checksum is free-form submission data, not a dedicated issue-form input.
+Extract `submitted_sha256` from the submitted issue, not release metadata or the
+computed digest. Accept a manually appended `### SHA-256` heading (including
+`### SHA-256 (sha256)`) or the `sha256` field in the Proposed Catalog Entry.
+If both sources supply a checksum, they must agree after trimming whitespace
+and normalizing hexadecimal case. A supplied checksum must contain exactly 64
+hexadecimal characters; malformed or conflicting values are submission failures,
+not an absent checksum.
 
 ## Step 2 - Validate the Submission
 
@@ -178,7 +179,7 @@ curl --location --proto '=https' --proto-redir '=https' --max-time 60 --silent -
 Run the download and checksum as separate shell calls, without `mkdir`, command
 substitution, pipelines, or chained commands. `/tmp/gh-aw/` already exists.
 Compute SHA-256 only after a successful download with final HTTP 200.
-Use `sha256sum /tmp/gh-aw/community-archive.zip` to record the actual digest.
+Use `sha256sum /tmp/gh-aw/community-archive.zip` to record its digest as `actual_sha256`.
 If no checksum was submitted, skip the comparison without failing validation.
 Otherwise, use the edit tool to write `/tmp/gh-aw/community-archive.sha256` with
 exactly this one line and a trailing newline, replacing `EXPECTED_SHA256` with
@@ -297,7 +298,15 @@ correction at the same version.
 ## Step 4 - Update the Community Catalog
 
 Edit `bundles/catalog.community.json`. Insert new entries alphabetically by
-bundle ID. The entry shape is:
+bundle ID.
+
+For both new entries and updates, only after every required validation passes,
+set `sha256` to `actual_sha256` from the downloaded archive. Do this even when no
+checksum was submitted. Replace any previous catalog digest; do not reuse a digest
+from an older archive. A submitted mismatch must fail validation before this step;
+writing the computed digest must never be used to bypass that failure.
+
+The entry shape is:
 
 ```json
 {
@@ -310,6 +319,7 @@ bundle ID. The entry shape is:
     "author": "<author>",
     "license": "<license>",
     "download_url": "<download-url>",
+    "sha256": "<actual_sha256>",
     "repository": "<repository>",
     "requires": {
       "speckit_version": "<speckit-version>"
@@ -326,7 +336,7 @@ bundle ID. The entry shape is:
 }
 ```
 
-Use the validated proposed entry rather than inventing metadata. Keep
+Use the validated proposed entry for submitted metadata and set `sha256` as above. Keep
 `verified: false`. Update the top-level `updated_at` to today's UTC date at
 midnight and preserve the top-level `catalog_url`.
 

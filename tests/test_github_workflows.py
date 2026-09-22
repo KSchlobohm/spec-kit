@@ -639,17 +639,58 @@ def test_community_archive_instructions_require_direct_evidence(kind):
 @pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])
 def test_community_checksum_instructions_preserve_submitted_digest(kind):
     source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
-    assert "| SHA-256 | `sha256` | No |" in source_text
-    assert "### SHA-256 (sha256)" in source_text
-    assert "from the submitted issue, not release metadata or the computed digest" in source_text
-    assert "exactly 64 hexadecimal characters" in source_text
-    assert "If both sources supply a checksum, they must agree" in source_text
+    parsing = source_text.split("## Step 1", 1)[1].split("## Step 2", 1)[0]
+    prose = " ".join(parsing.split())
+    form = yaml.safe_load(
+        (REPO_ROOT / ".github" / "ISSUE_TEMPLATE" / f"{kind}_submission.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    form_ids = {field["id"] for field in form["body"] if "id" in field}
+    documented_ids = set(re.findall(r"^\| [^|\n]+ \| `([^`]+)` \|", parsing, re.MULTILINE))
+    assert documented_ids <= form_ids
+    assert "not a dedicated issue-form input" in prose
+    assert "manually appended `### SHA-256` heading" in prose
+    assert "### SHA-256 (sha256)" in prose
+    assert "from the submitted issue, not release metadata or the computed digest" in prose
+    assert "exactly 64 hexadecimal characters" in prose
+    if kind == "preset":
+        assert "Proposed Catalog Entry" not in parsing
+    else:
+        assert "the `sha256` field in the Proposed Catalog Entry" in prose
+        assert "If both sources supply a checksum, they must agree" in prose
+
+    comparison = source_text.split("Compute SHA-256 only after", 1)[1].split(
+        "A blocked or failed download", 1
+    )[0]
+    comparison_prose = " ".join(comparison.split())
     assert "EXPECTED_SHA256  /tmp/gh-aw/community-archive.zip" in source_text
-    assert "Never replace a mismatching submitted checksum" in source_text
-    assert "A `FAILED` checksum comparison is a Failed outcome" in source_text
-    assert "Require exit code 0 and an `OK` result" in source_text
-    assert "If no checksum was submitted, skip the comparison" in source_text
-    assert "sha256sum /tmp/gh-aw/community-archive.zip" in source_text
+    assert "the validated `submitted_sha256`" in comparison_prose
+    assert "Never replace a mismatching submitted checksum" in comparison_prose
+    assert "A `FAILED` checksum comparison is a Failed outcome" in comparison_prose
+    assert (
+        "remove `validation-passed`, add `validation-failed`, and stop "
+        "without catalog/docs edits or a PR."
+    ) in comparison_prose
+    assert "Require exit code 0 and an `OK` result" in comparison_prose
+    assert "If no checksum was submitted, skip the comparison" in comparison_prose
+    assert "sha256sum /tmp/gh-aw/community-archive.zip" in comparison
+    assert "record its digest as `actual_sha256`" in comparison_prose
+
+
+@pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])
+def test_community_catalog_records_computed_checksum_only_after_validation(kind):
+    source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
+    catalog = source_text.split("## Step 4", 1)[1].split("## Step 5", 1)[0]
+    prose = " ".join(catalog.split())
+    assert '"sha256": "<actual_sha256>"' in catalog
+    assert (
+        "For both new entries and updates, only after every required validation "
+        "passes, set `sha256` to `actual_sha256` from the downloaded archive."
+    ) in prose
+    assert "Do this even when no checksum was submitted." in prose
+    assert "Replace any previous catalog digest; do not reuse a digest from an older archive." in prose
+    assert "A submitted mismatch must fail validation before this step" in prose
 
 
 @pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum not available")
