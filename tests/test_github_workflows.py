@@ -636,12 +636,35 @@ def test_community_archive_instructions_require_direct_evidence(kind):
 @pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])
 def test_community_archive_permission_failures_are_not_submission_failures(kind):
     source_text, _, source, compiled = _agentic_workflow(f"add-community-{kind}")
-    assert "validation is blocked by the workflow environment" in source_text
-    assert "Do not ask the submitter to change a URL or resubmit solely" in source_text
-    assert "Do not add `validation-failed` or `needs-info` solely for an" in source_text
-    assert "Stop without editing catalog/docs files or opening a PR." in source_text
-    assert "If independent submission checks failed, report those separately" in source_text
-    assert "Remove `validation-passed`" in source_text
+    outcome = source_text.split("### Validation outcome\n", 1)[1].split(
+        "\n## Step 3", 1
+    )[0]
+    assert re.findall(r"^#### (.+)$", outcome, re.MULTILINE) == [
+        "Blocked", "Failed", "Passed",
+    ]
+    intro, blocked, failed, passed = re.split(r"\n#### [^\n]+\n", outcome)
+    assert " ".join(intro.split()) == (
+        "Choose exactly one outcome below, in order. A check that could not run "
+        "is incomplete, not a passed check or a confirmed submission defect."
+    )
+    assert "validation is blocked by the workflow environment" in blocked
+    assert "Do not ask the submitter to change a URL or resubmit solely" in blocked
+    assert "Do not add `validation-failed` or `needs-info` solely for an" in blocked
+    assert "If independent submission checks failed, report those separately" in blocked
+    assert "and apply `validation-failed` for those failures only." in blocked
+    assert "Remove `validation-passed`" in blocked
+    assert " ".join(blocked.split()).endswith(
+        "Stop processing here without editing catalog/docs files or opening a PR. "
+        "Do not evaluate the Failed or Passed outcomes below."
+    )
+    assert " ".join(failed.split()).startswith(
+        "If there are no environment blockers and a completed check found a "
+        "submission defect:"
+    )
+    assert " ".join(passed.split()).startswith(
+        "If there are no environment blockers and every required check completed "
+        "and passed:"
+    )
     assert "validation-passed" in source["safe-outputs"]["remove-labels"]["allowed"]
     assert "validation-passed" in _safe_output_config(compiled)["remove_labels"]["allowed"]
 

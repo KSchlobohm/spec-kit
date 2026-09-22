@@ -173,6 +173,11 @@ substitute for fetching the archive. Never execute downloaded content.
 
 ### Validation outcome
 
+Choose exactly one outcome below, in order. A check that could not run is
+incomplete, not a passed check or a confirmed submission defect.
+
+#### Blocked
+
 If a permission denial, sandbox/network restriction, timeout, or service outage
 prevents a required check, validation is blocked by the workflow environment:
 - Comment with the attempted URL, exact error, and workflow run link, asking a
@@ -184,15 +189,20 @@ prevents a required check, validation is blocked by the workflow environment:
 - If independent submission checks failed, report those separately
   and apply `validation-failed` for those failures only. An observed HTTP 404
   or a checksum mismatch is a submission failure, not a permission failure.
-- Stop without editing catalog/docs files or opening a PR.
+- Stop processing here without editing catalog/docs files or opening a PR.
+  Do not evaluate the Failed or Passed outcomes below.
 
-If **any** validation fails:
+#### Failed
+
+If there are no environment blockers and a completed check found a submission defect:
 1. Add a comment on the issue listing each failed check with a clear explanation
    of what's wrong and how to fix it
 2. Add the `validation-failed` label
 3. **Stop — do not proceed further**
 
-If all validations pass:
+#### Passed
+
+If there are no environment blockers and every required check completed and passed:
 1. Add the `validation-passed` label
 2. Continue to Step 3
 

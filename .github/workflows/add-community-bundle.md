@@ -220,6 +220,11 @@ should add to Spec Kit.
 
 ### Validation outcome
 
+Choose exactly one outcome below, in order. A check that could not run is
+incomplete, not a passed check or a confirmed submission defect.
+
+#### Blocked
+
 If a permission denial, sandbox/network restriction, timeout, or service outage
 prevents a required check, validation is blocked by the workflow environment:
 - Comment with the attempted URL, exact error, and workflow run link, asking a
@@ -231,17 +236,22 @@ prevents a required check, validation is blocked by the workflow environment:
 - If independent submission checks failed, report those separately
   and apply `validation-failed` for those failures only. An observed HTTP 404
   or a checksum mismatch is a submission failure, not a permission failure.
-- Stop without editing catalog/docs files or opening a PR.
+- Stop processing here without editing catalog/docs files or opening a PR.
+  Do not evaluate the Failed or Passed outcomes below.
 
-If any check fails:
+#### Failed
+
+If there are no environment blockers and a completed check found a submission defect:
 
 1. Comment once with every failed check and a specific correction.
 2. Remove `validation-passed`.
 3. Add `validation-failed`; add `needs-info` when submitter input is needed.
 4. Stop without editing files or creating a pull request.
 
-If all checks pass, remove `validation-failed` and `needs-info`, add
-`validation-passed`, and continue.
+#### Passed
+
+If there are no environment blockers and every required check completed and passed:
+remove `validation-failed` and `needs-info`, add `validation-passed`, and continue.
 
 ## Step 3 - Determine Add or Update
 
