@@ -469,7 +469,7 @@ def test_community_upgrade_preserves_scoped_draft_pr_contract(
     }
     removable_labels = (
         ["validation-passed", "validation-failed", "needs-info"]
-        if kind == "bundle" else ["validation-passed"]
+        if kind == "bundle" else ["validation-passed", "validation-failed"]
     )
     assert outputs["remove_labels"]["allowed"] == source["safe-outputs"][
         "remove-labels"
@@ -666,6 +666,12 @@ def test_community_archive_permission_failures_are_not_submission_failures(kind)
         "If there are no environment blockers and every required check completed "
         "and passed:"
     )
+    assert re.search(
+        r"remove `validation-failed`.*add (?:the )?`validation-passed`",
+        passed, re.IGNORECASE | re.DOTALL,
+    )
+    assert "validation-failed" in source["safe-outputs"]["remove-labels"]["allowed"]
+    assert "validation-failed" in _safe_output_config(compiled)["remove_labels"]["allowed"]
     assert "validation-passed" in source["safe-outputs"]["remove-labels"]["allowed"]
     assert "validation-passed" in _safe_output_config(compiled)["remove_labels"]["allowed"]
 

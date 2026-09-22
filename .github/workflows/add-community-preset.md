@@ -61,7 +61,7 @@ safe-outputs:
     allowed: [preset-submission, validation-passed, validation-failed, needs-info]
     max: 3
   remove-labels:
-    allowed: [validation-passed]
+    allowed: [validation-passed, validation-failed]
 ---
 
 # Add Community Preset from Issue Submission
@@ -255,8 +255,9 @@ If there are no environment blockers and a completed check found a submission de
 #### Passed
 
 If there are no environment blockers and every required check completed and passed:
-1. Add the `validation-passed` label
-2. Continue to Step 3
+1. Remove `validation-failed`
+2. Add the `validation-passed` label
+3. Continue to Step 3
 
 ## Step 3 — Determine Add vs Update
 
