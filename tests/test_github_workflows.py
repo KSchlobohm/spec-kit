@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -632,6 +634,67 @@ def test_community_archive_instructions_require_direct_evidence(kind):
         "Compute SHA-256 only after a successful download with final HTTP 200."
         in source_text
     )
+
+
+@pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])
+def test_community_checksum_instructions_preserve_submitted_digest(kind):
+    source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
+    assert "| SHA-256 | `sha256` | No |" in source_text
+    assert "### SHA-256 (sha256)" in source_text
+    assert "from the submitted issue, not release metadata or the computed digest" in source_text
+    assert "exactly 64 hexadecimal characters" in source_text
+    assert "If both sources supply a checksum, they must agree" in source_text
+    assert "EXPECTED_SHA256  /tmp/gh-aw/community-archive.zip" in source_text
+    assert "Never replace a mismatching submitted checksum" in source_text
+    assert "A `FAILED` checksum comparison is a Failed outcome" in source_text
+    assert "Require exit code 0 and an `OK` result" in source_text
+    assert "If no checksum was submitted, skip the comparison" in source_text
+    assert "sha256sum /tmp/gh-aw/community-archive.zip" in source_text
+
+
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum not available")
+@pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])
+@pytest.mark.parametrize("case", ["matching", "mismatch", "malformed"])
+def test_community_checksum_command_rejects_invalid_digest(kind, case, tmp_path):
+    source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
+    command = re.search(r"```bash\n(sha256sum --check[^\n]+)\n```", source_text)
+    assert command is not None
+    args = shlex.split(command[1])
+    assert args == [
+        "sha256sum", "--check", "--strict", "/tmp/gh-aw/community-archive.sha256",
+    ]
+    manifest = re.search(
+        r"```text\n(EXPECTED_SHA256  /tmp/gh-aw/community-archive.zip)\n```", source_text
+    )
+    assert manifest is not None
+    archive = tmp_path / "community-archive.zip"
+    archive.write_bytes(b"community archive fixture\n")
+    expected = {
+        "matching": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "mismatch": "0" * 64,
+        "malformed": "not-a-sha256",
+    }[case]
+    checksum_file = tmp_path / "community-archive.sha256"
+    checksum_file.write_text(
+        manifest[1].replace("EXPECTED_SHA256", expected).replace(
+            "/tmp/gh-aw/community-archive.zip", archive.name
+        ) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+    executable = shutil.which("sha256sum")
+    assert executable is not None
+    result = subprocess.run(
+        [executable, *args[1:-1], checksum_file.name],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    if case == "matching":
+        assert result.returncode == 0, result.stderr
+        assert f"{archive.name}: OK" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert f"{archive.name}: OK" not in result.stdout
+        if case == "mismatch":
+            assert result.stdout.strip() == f"{archive.name}: FAILED"
 
 
 @pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])

@@ -96,6 +96,7 @@ fields):
 | Author | `author` | Yes |
 | Repository URL | `repository` | Yes |
 | Download URL | `download-url` | Yes |
+| SHA-256 | `sha256` | No |
 | Documentation URL | `documentation` | Yes |
 | License | `license` | Yes |
 | Required Spec Kit Version | `speckit-version` | Yes |
@@ -108,6 +109,13 @@ fields):
 The issue body uses GitHub's issue form format. Each field appears under a
 heading matching the field label (e.g., `### Preset ID` followed by the
 value). Parse accordingly.
+
+Extract `submitted_sha256` from the submitted issue, not release metadata or the computed digest.
+Accept a `### SHA-256` heading (including `### SHA-256 (sha256)`) or the
+`sha256` field in the Proposed Catalog Entry. If both sources supply a checksum, they must agree
+after trimming whitespace and normalizing hexadecimal case. A supplied checksum
+must contain exactly 64 hexadecimal characters; malformed or conflicting values
+are submission failures, not an absent checksum.
 
 ## Step 2 — Validate the Submission
 
@@ -215,8 +223,28 @@ curl --location --proto '=https' --proto-redir '=https' --max-time 60 --silent -
 Run the download and checksum as separate shell calls, without `mkdir`, command
 substitution, pipelines, or chained commands. `/tmp/gh-aw/` already exists.
 Compute SHA-256 only after a successful download with final HTTP 200.
-Use `sha256sum /tmp/gh-aw/community-archive.zip` and compare its digest with the
-submitted checksum when present; do not require a submitted checksum when absent.
+Use `sha256sum /tmp/gh-aw/community-archive.zip` to record the actual digest.
+If no checksum was submitted, skip the comparison without failing validation.
+Otherwise, use the edit tool to write `/tmp/gh-aw/community-archive.sha256` with
+exactly this one line and a trailing newline, replacing `EXPECTED_SHA256` with
+the validated `submitted_sha256` (two spaces before the fixed archive path):
+
+```text
+EXPECTED_SHA256  /tmp/gh-aw/community-archive.zip
+```
+
+Run this comparison as a separate shell call:
+
+```bash
+sha256sum --check --strict /tmp/gh-aw/community-archive.sha256
+```
+
+Require exit code 0 and an `OK` result before marking the checksum check passed.
+A `FAILED` checksum comparison is a Failed outcome: report the submitted and
+actual digests, remove `validation-passed`, add `validation-failed`, and stop
+without catalog/docs edits or a PR. Never replace a mismatching submitted checksum
+with the computed or release-metadata digest. A command that cannot run or read
+the archive is Blocked, not a successful comparison.
 A blocked or failed download must not count as a passed check; repository/release metadata is not a
 substitute for fetching the archive. Never execute downloaded content.
 
