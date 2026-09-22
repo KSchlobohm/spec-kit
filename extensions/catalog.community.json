@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-09-18T00:00:00Z",
+  "updated_at": "2026-09-22T00:00:00Z",
   "catalog_url": "https://raw.githubusercontent.com/github/spec-kit/main/extensions/catalog.community.json",
   "extensions": {
     "adrkit": {
@@ -6105,7 +6105,7 @@
       "changelog": "https://github.com/datastone-inc/spec-kit-verify-tasks/blob/master/CHANGELOG.md",
       "license": "MIT",
       "category": "code",
-      "effect": "read-write",
+      "effect": "read-only",
       "requires": {
         "speckit_version": ">=0.12.17"
       },
@@ -6123,7 +6123,8 @@
       "downloads": 0,
       "stars": 0,
       "created_at": "2026-03-16T00:00:00Z",
-      "updated_at": "2026-09-17T00:00:00Z"
+      "updated_at": "2026-09-22T00:00:00Z",
+      "sha256": "12763b4045690c4300b9486035a6359b3a6f5ce8e4cee3c357464aa53f7ceb0f"
     },
     "version-guard": {
       "name": "Version Guard",
