@@ -64,6 +64,23 @@ safe-outputs:
     max: 3
   remove-labels:
     allowed: [validation-passed, validation-failed, needs-info]
+
+jobs:
+  conclusion:
+    pre-steps:
+      - name: Mark bundle submission passed after PR creation
+        if: needs.safe_outputs.result == 'success' && needs.safe_outputs.outputs.created_pr_number != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const issue = { ...context.repo, issue_number: context.payload.issue.number };
+            const labels = await github.paginate(github.rest.issues.listLabelsOnIssue, issue);
+            for (const name of ['validation-failed', 'needs-info']) {
+              if (labels.some(label => label.name === name)) {
+                await github.rest.issues.removeLabel({ ...issue, name });
+              }
+            }
+            await github.rest.issues.addLabels({ ...issue, labels: ['validation-passed'] });
 ---
 
 # Add Community Bundle from Issue Submission
@@ -283,6 +300,9 @@ If there are no environment blockers and a completed check found a submission de
 
 If there are no environment blockers and every required check completed and passed:
 remove `validation-failed` and `needs-info`, add `validation-passed`, and continue.
+After successful PR creation, the `conclusion` job also applies these
+issue labels independently of the agent. It does not run when no PR was created
+or safe-output processing failed.
 
 ## Step 3 - Determine Add or Update
 
