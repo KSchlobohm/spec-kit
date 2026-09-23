@@ -149,6 +149,116 @@ def _safe_output_config(compiled: dict) -> dict:
     return json.loads(step["env"]["GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG"])
 
 
+def _bundle_success_label_step() -> dict:
+    _, _, source, _ = _agentic_workflow("add-community-bundle")
+    return _workflow_step(
+        source["jobs"]["conclusion"]["pre-steps"],
+        "Mark bundle submission passed after PR creation",
+    )
+
+
+def test_bundle_success_labels_run_after_successful_pr_publication():
+    _, _, _, compiled = _agentic_workflow("add-community-bundle")
+    step = _bundle_success_label_step()
+    conclusion = compiled["jobs"]["conclusion"]
+    assert "safe_outputs" in conclusion["needs"]
+    assert conclusion["permissions"]["issues"] == "write"
+    assert step["if"] == (
+        "needs.safe_outputs.result == 'success' && "
+        "needs.safe_outputs.outputs.created_pr_number != ''"
+    )
+    assert _workflow_step(conclusion["steps"], step["name"]) == step
+    assert compiled["jobs"]["safe_outputs"]["outputs"]["created_pr_number"] == (
+        "${{ steps.process_safe_outputs.outputs.created_pr_number }}"
+    )
+    assert compiled["jobs"]["agent"]["permissions"]["issues"] == "read"
+
+
+def _run_bundle_success_labels(result, pr_number, labels, fail_api=""):
+    step = _bundle_success_label_step()
+    harness = r"""
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const labels = new Set(input.labels);
+const calls = [];
+const context = {repo: {owner: 'test-owner', repo: 'test-repo'}, payload: {issue: {number: 22}}};
+const record = (api, args) => {
+  calls.push({api, args});
+  if (api === input.fail_api) throw new Error(`API failure: ${api}`);
+};
+const github = {
+  rest: {issues: {
+    listLabelsOnIssue: 'listLabelsOnIssue',
+    removeLabel: async args => { record('removeLabel', args); labels.delete(args.name); },
+    addLabels: async args => { record('addLabels', args); args.labels.forEach(x => labels.add(x)); }
+  }},
+  paginate: async (api, args) => { record(api, args); return [...labels].map(name => ({name})); }
+};
+const needs = {safe_outputs: {result: input.result, outputs: {created_pr_number: input.pr_number}}};
+const shouldRun = new Function('needs', `return ${input.condition}`)(needs);
+(async () => {
+  let error = null;
+  try {
+    if (shouldRun) {
+      const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+      await new AsyncFunction('github', 'context', input.script)(github, context);
+    }
+  } catch (e) { error = e.message; }
+  console.log(JSON.stringify({labels: [...labels].sort(), calls, error}));
+})();
+"""
+    completed = subprocess.run(
+        ["node", "-e", harness],
+        input=json.dumps({
+            "condition": step["if"], "script": step["with"]["script"],
+            "result": result, "pr_number": pr_number, "labels": labels, "fail_api": fail_api,
+        }),
+        capture_output=True, text=True, check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+@pytest.mark.parametrize("labels", [
+    ["bundle-submission", "validation-failed"],
+    ["bundle-submission", "validation-failed", "needs-info", "triaged"],
+    ["bundle-submission", "validation-passed"],
+])
+def test_bundle_success_labels_correct_omitted_agent_updates(labels):
+    result = _run_bundle_success_labels("success", "37", labels)
+    assert result["error"] is None
+    assert result["labels"] == sorted(
+        (set(labels) - {"validation-failed", "needs-info"}) | {"validation-passed"}
+    )
+    assert result["calls"][-1]["api"] == "addLabels"
+    for call in result["calls"]:
+        assert call["args"]["owner"] == "test-owner"
+        assert call["args"]["repo"] == "test-repo"
+        assert call["args"]["issue_number"] == 22
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+@pytest.mark.parametrize(("status", "pr_number"), [
+    ("success", ""), ("failure", ""), ("failure", "37"),
+    ("cancelled", "37"), ("skipped", ""),
+])
+def test_bundle_success_labels_do_not_run_without_successful_publication(status, pr_number):
+    labels = ["bundle-submission", "validation-failed"]
+    result = _run_bundle_success_labels(status, pr_number, labels)
+    assert result == {"labels": sorted(labels), "calls": [], "error": None}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+@pytest.mark.parametrize("fail_api", ["listLabelsOnIssue", "removeLabel", "addLabels"])
+def test_bundle_success_labels_surface_api_errors(fail_api):
+    result = _run_bundle_success_labels(
+        "success", "37", ["bundle-submission", "validation-failed"], fail_api
+    )
+    assert result["error"] == f"API failure: {fail_api}"
+    assert result["calls"][-1]["api"] == fail_api
+    assert "validation-passed" not in result["labels"]
+
+
 def test_github_actions_are_pinned_to_full_commit_shas():
     unpinned_refs = []
 
