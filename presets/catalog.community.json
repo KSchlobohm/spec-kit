@@ -994,7 +994,7 @@
       "name": "Software Humano",
       "id": "software-humano",
       "version": "2.0.3",
-      "description": "Compiles the requirements of the Software Humano manifesto into the eight core Spec Kit commands and into the spec, plan and tasks templates, quoting the manifesto's literal text rather than rephrasing it. Treats the cost a product transfers to the person — attention, learning, decisions they did not come to make — as something budgeted and verified.",
+      "description": "Applies the Software Humano manifesto to Spec Kit commands and templates, treating the attention, learning, and decisions a product asks of people as budgets to verify.",
       "author": "Damián Acuña",
       "repository": "https://github.com/dacunao/software-humano-speckit",
       "download_url": "https://github.com/dacunao/software-humano-speckit/releases/download/preset-software-humano-v2.0.3/Software_Humano_Preset_v2.0.3.zip",
