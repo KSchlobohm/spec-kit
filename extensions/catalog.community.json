@@ -602,7 +602,7 @@
     "archive": {
       "name": "Archive Extension",
       "id": "archive",
-      "description": "Archive merged features into main project memory, resolving gaps and conflicts.",
+      "description": "Consolidates merged feature artifacts into project memory, reconciling gaps and conflicts.",
       "author": "Stanislav Deviatov",
       "version": "1.4.0",
       "download_url": "https://github.com/stn1slv/spec-kit-archive/archive/refs/tags/v1.4.0.zip",
