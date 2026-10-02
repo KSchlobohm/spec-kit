@@ -18,20 +18,26 @@ jobs:
           SUBMISSION_PR_NUMBER: ${{ needs.safe_outputs.outputs.created_pr_number }}
           SUBMISSION_SAFE_OUTPUTS_RESULT: ${{ needs.safe_outputs.result }}
           SUBMISSION_AGENT_RESULT: ${{ needs.agent.result }}
+          SUBMISSION_COMMENT_ID: ${{ needs.safe_outputs.outputs.comment_id }}
         with:
           github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
             const issue = { ...context.repo, issue_number: context.payload.issue.number };
             const runUrl = process.env.SUBMISSION_RUN_URL;
             const comments = await github.paginate(github.rest.issues.listComments, issue);
-            if (comments.some(comment =>
-              comment.user?.type === 'Bot' && comment.body?.includes(`](${runUrl})`)
+            const completed = process.env.SUBMISSION_AGENT_RESULT === 'success' &&
+              process.env.SUBMISSION_SAFE_OUTPUTS_RESULT === 'success';
+            if (completed && comments.some(comment =>
+              (comment.user?.type === 'Bot' ||
+                String(comment.id) === process.env.SUBMISSION_COMMENT_ID) &&
+              /\bOutcome:\s*(Wrong submission type|Needs clarification|Blocked|Failed|PR requested|PR created)\b/i.test(comment.body || '') &&
+              comment.body?.includes(`](${runUrl})`)
             )) return;
             const prNumber = process.env.SUBMISSION_PR_NUMBER;
             const published = process.env.SUBMISSION_SAFE_OUTPUTS_RESULT === 'success' && prNumber;
             const outcome = published
               ? `**Outcome: PR created.** Draft pull request: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}.`
-              : '**Outcome: Blocked.** No submission outcome was reported. A maintainer should inspect this run and rerun validation; this is not a confirmed submission defect.';
+              : `**Outcome: Blocked.** ${completed ? 'No submission outcome was reported.' : 'Workflow processing did not complete; any earlier agent outcome does not confirm completion.'} A maintainer should inspect this run and rerun validation; this is not a confirmed submission defect.`;
             await github.rest.issues.createComment({
               ...issue,
               body: `${outcome}\n\nAgent: ${process.env.SUBMISSION_AGENT_RESULT}; safe outputs: ${process.env.SUBMISSION_SAFE_OUTPUTS_RESULT}.\n\n[Workflow run](${runUrl})`
@@ -88,5 +94,8 @@ one outcome comment; do not add a separate intake-success comment.
 
 Do not use `noop`, `missing_data`, or `missing_tool` as a substitute for an
 issue outcome comment. The submission_outcome job supplies a fallback comment
-if no bot comment links to this run attempt, including when the agent or safe outputs fail.
+if no workflow outcome comment links to this run attempt. Recognize comments
+published by safe outputs even when a personal token posts as a user rather
+than a bot. If the agent or safe outputs fail, report that incomplete processing
+even when an earlier outcome comment exists.
 That fallback does not convert an incomplete check into passed validation.

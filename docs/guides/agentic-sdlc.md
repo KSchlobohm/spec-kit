@@ -230,7 +230,8 @@ punctuation. Wrong-type or unclear submissions receive an explanatory issue
 comment; maintainers decide how to relabel or clarify them. Every processing
 path reports an outcome and workflow run link. A separate reporting job adds
 a fallback status if the run ends without an outcome comment, distinguishing
-a published draft PR from incomplete processing.
+a published draft PR from incomplete processing. Agent or safe-output failures
+still receive a status comment if an earlier agent comment was already posted.
 
 Catalog discovery does not audit or endorse community code; users must
 review third-party components before use.

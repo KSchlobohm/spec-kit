@@ -44,13 +44,17 @@ def test_submission_reporting_is_wired_into_compiled_workflow(kind):
     assert compiled["jobs"]["safe_outputs"]["outputs"]["created_pr_number"] == (
         "${{ steps.process_safe_outputs.outputs.created_pr_number }}"
     )
+    assert compiled["jobs"]["safe_outputs"]["outputs"]["comment_id"] == (
+        "${{ steps.process_safe_outputs.outputs.comment_id }}"
+    )
     text = (WORKFLOWS / f"add-community-{kind}.md").read_text(encoding="utf-8")
     assert "If it does not, stop without commenting" not in text
     assert f"names: [{kind}-submission]" in text
 
 
 def _run_report(comments=(), pr_number="", safe_result="success",
-                agent_result="success", activation_result="success", fail_api=""):
+                agent_result="success", activation_result="success", fail_api="",
+                comment_id=""):
     step = _reporting_job()["steps"][0]
     harness = r"""
 const fs = require('node:fs');
@@ -75,6 +79,7 @@ process.env.SUBMISSION_RUN_URL = 'https://github.com/owner/repo/actions/runs/123
 process.env.SUBMISSION_PR_NUMBER = input.pr_number;
 process.env.SUBMISSION_SAFE_OUTPUTS_RESULT = input.safe_result;
 process.env.SUBMISSION_AGENT_RESULT = input.agent_result;
+process.env.SUBMISSION_COMMENT_ID = input.comment_id;
 const always = () => true;
 const needs = {activation: {result: input.activation_result}};
 (async () => {
@@ -96,6 +101,7 @@ const needs = {activation: {result: input.activation_result}};
             "comments": comments, "pr_number": pr_number,
             "safe_result": safe_result, "agent_result": agent_result,
             "activation_result": activation_result, "fail_api": fail_api,
+            "comment_id": comment_id,
         }),
         capture_output=True, text=True, check=True,
     )
@@ -136,10 +142,35 @@ def test_published_pr_reports_actual_link():
 def test_existing_run_outcome_prevents_duplicate_comment():
     result = _run_report(comments=[{
         "user": {"type": "Bot"},
-        "body": "Wrong submission type. [Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)",
+        "body": "**Outcome: Wrong submission type.** [Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)",
     }])
     assert result["error"] is None
     assert [call["api"] for call in result["calls"]] == ["listComments"]
+
+
+@requires_node
+def test_pat_authored_safe_output_prevents_duplicate_comment():
+    result = _run_report(comment_id="17", comments=[{
+        "id": 17, "user": {"type": "User"},
+        "body": "**Outcome: Failed.** [Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)",
+    }])
+    assert result["error"] is None
+    assert [call["api"] for call in result["calls"]] == ["listComments"]
+
+
+@requires_node
+@pytest.mark.parametrize(("agent", "safe"), [
+    ("success", "failure"), ("failure", "success"), ("success", "cancelled"),
+])
+def test_incomplete_processing_is_reported_even_after_agent_comment(agent, safe):
+    result = _run_report(agent_result=agent, safe_result=safe, comments=[{
+        "user": {"type": "Bot"},
+        "body": "**Outcome: PR requested.** [Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)",
+    }])
+    assert result["error"] is None
+    assert result["calls"][-1]["api"] == "createComment"
+    assert "**Outcome: Blocked.**" in result["calls"][-1]["args"]["body"]
+    assert "No submission outcome was reported" not in result["calls"][-1]["args"]["body"]
 
 
 @requires_node
@@ -149,6 +180,8 @@ def test_existing_run_outcome_prevents_duplicate_comment():
     {"user": {"type": "Bot"}, "body": "[Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/1)"},
     {"user": {"type": "Bot"}, "body": "[Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/20)"},
     {"user": {"type": "Bot"}, "body": None},
+    {"user": {"type": "Bot"}, "body": "Logs: [Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)"},
+    {"id": 18, "user": {"type": "User"}, "body": "**Outcome: Failed.** [Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)"},
 ])
 def test_unrelated_comments_do_not_hide_missing_outcome(comment):
     result = _run_report(comments=[comment])
