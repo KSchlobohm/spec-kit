@@ -139,6 +139,19 @@ def test_published_pr_reports_actual_link():
 
 
 @requires_node
+@pytest.mark.parametrize("agent_result", ["failure", "cancelled"])
+def test_published_pr_does_not_hide_incomplete_agent_processing(agent_result):
+    result = _run_report(agent_result=agent_result, pr_number="37")
+    assert result["error"] is None
+    body = result["calls"][-1]["args"]["body"]
+    assert body.startswith("**Outcome: Blocked.**")
+    assert "Workflow processing did not complete" in body
+    assert "https://github.com/owner/repo/pull/37" in body
+    assert "**Outcome: PR created.**" not in body
+    assert "maintainer" in body
+
+
+@requires_node
 def test_existing_run_outcome_prevents_duplicate_comment():
     result = _run_report(comments=[{
         "user": {"type": "Bot"},

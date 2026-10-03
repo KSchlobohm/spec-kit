@@ -35,9 +35,12 @@ jobs:
             )) return;
             const prNumber = process.env.SUBMISSION_PR_NUMBER;
             const published = process.env.SUBMISSION_SAFE_OUTPUTS_RESULT === 'success' && prNumber;
-            const outcome = published
-              ? `**Outcome: PR created.** Draft pull request: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}.`
-              : `**Outcome: Blocked.** ${completed ? 'No submission outcome was reported.' : 'Workflow processing did not complete; any earlier agent outcome does not confirm completion.'} A maintainer should inspect this run and rerun validation; this is not a confirmed submission defect.`;
+            const prLink = published
+              ? ` Draft pull request: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}.`
+              : '';
+            const outcome = completed && published
+              ? `**Outcome: PR created.**${prLink}`
+              : `**Outcome: Blocked.** ${completed ? 'No submission outcome was reported.' : 'Workflow processing did not complete; any earlier agent outcome does not confirm completion.'} A maintainer should inspect this run and rerun validation; this is not a confirmed submission defect.${prLink}`;
             await github.rest.issues.createComment({
               ...issue,
               body: `${outcome}\n\nAgent: ${process.env.SUBMISSION_AGENT_RESULT}; safe outputs: ${process.env.SUBMISSION_SAFE_OUTPUTS_RESULT}.\n\n[Workflow run](${runUrl})`
@@ -98,4 +101,6 @@ if no workflow outcome comment links to this run attempt. Recognize comments
 published by safe outputs even when a personal token posts as a user rather
 than a bot. If the agent or safe outputs fail, report that incomplete processing
 even when an earlier outcome comment exists.
+Incomplete processing takes precedence over PR publication; include the actual
+PR link when available, but keep the outcome Blocked until processing completes.
 That fallback does not convert an incomplete check into passed validation.
