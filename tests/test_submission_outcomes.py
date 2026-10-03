@@ -47,6 +47,10 @@ def test_submission_reporting_is_wired_into_compiled_workflow(kind):
     assert compiled["jobs"]["safe_outputs"]["outputs"]["comment_id"] == (
         "${{ steps.process_safe_outputs.outputs.comment_id }}"
     )
+    for counter in ("failed", "deferred", "cancelled"):
+        assert compiled["jobs"]["safe_outputs"]["outputs"][f"process_safe_outputs_items_{counter}"] == (
+            "${{ steps.process_safe_outputs.outputs.items_" + counter + " }}"
+        )
     text = (WORKFLOWS / f"add-community-{kind}.md").read_text(encoding="utf-8")
     assert "If it does not, stop without commenting" not in text
     assert f"names: [{kind}-submission]" in text
@@ -54,7 +58,7 @@ def test_submission_reporting_is_wired_into_compiled_workflow(kind):
 
 def _run_report(comments=(), pr_number="", safe_result="success",
                 agent_result="success", activation_result="success", fail_api="",
-                comment_id=""):
+                comment_id="", failed="0", deferred="0", cancelled="0"):
     step = _reporting_job()["steps"][0]
     harness = r"""
 const fs = require('node:fs');
@@ -80,6 +84,9 @@ process.env.SUBMISSION_PR_NUMBER = input.pr_number;
 process.env.SUBMISSION_SAFE_OUTPUTS_RESULT = input.safe_result;
 process.env.SUBMISSION_AGENT_RESULT = input.agent_result;
 process.env.SUBMISSION_COMMENT_ID = input.comment_id;
+process.env.SUBMISSION_ITEMS_FAILED = input.failed;
+process.env.SUBMISSION_ITEMS_DEFERRED = input.deferred;
+process.env.SUBMISSION_ITEMS_CANCELLED = input.cancelled;
 const always = () => true;
 const needs = {activation: {result: input.activation_result}};
 (async () => {
@@ -102,6 +109,7 @@ const needs = {activation: {result: input.activation_result}};
             "safe_result": safe_result, "agent_result": agent_result,
             "activation_result": activation_result, "fail_api": fail_api,
             "comment_id": comment_id,
+            "failed": failed, "deferred": deferred, "cancelled": cancelled,
         }),
         capture_output=True, text=True, check=True,
     )
@@ -184,6 +192,25 @@ def test_incomplete_processing_is_reported_even_after_agent_comment(agent, safe)
     assert result["calls"][-1]["api"] == "createComment"
     assert "**Outcome: Blocked.**" in result["calls"][-1]["args"]["body"]
     assert "No submission outcome was reported" not in result["calls"][-1]["args"]["body"]
+
+
+@requires_node
+@pytest.mark.parametrize("counter", ["failed", "deferred", "cancelled"])
+@pytest.mark.parametrize("value", ["1", ""])
+@pytest.mark.parametrize("pr_number", ["", "37"])
+def test_successful_job_does_not_hide_incomplete_output_items(counter, value, pr_number):
+    result = _run_report(pr_number=pr_number, **{counter: value}, comments=[{
+        "user": {"type": "Bot"},
+        "body": "**Outcome: PR requested.** [Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)",
+    }])
+    assert result["error"] is None
+    assert result["calls"][-1]["api"] == "createComment"
+    body = result["calls"][-1]["args"]["body"]
+    assert body.startswith("**Outcome: Blocked.**")
+    assert "Workflow processing did not complete" in body
+    assert "**Outcome: PR created.**" not in body
+    if pr_number:
+        assert "https://github.com/owner/repo/pull/37" in body
 
 
 @requires_node

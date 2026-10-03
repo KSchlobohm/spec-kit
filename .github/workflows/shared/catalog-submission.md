@@ -19,6 +19,9 @@ jobs:
           SUBMISSION_SAFE_OUTPUTS_RESULT: ${{ needs.safe_outputs.result }}
           SUBMISSION_AGENT_RESULT: ${{ needs.agent.result }}
           SUBMISSION_COMMENT_ID: ${{ needs.safe_outputs.outputs.comment_id }}
+          SUBMISSION_ITEMS_FAILED: ${{ needs.safe_outputs.outputs.process_safe_outputs_items_failed }}
+          SUBMISSION_ITEMS_DEFERRED: ${{ needs.safe_outputs.outputs.process_safe_outputs_items_deferred }}
+          SUBMISSION_ITEMS_CANCELLED: ${{ needs.safe_outputs.outputs.process_safe_outputs_items_cancelled }}
         with:
           github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
@@ -26,7 +29,9 @@ jobs:
             const runUrl = process.env.SUBMISSION_RUN_URL;
             const comments = await github.paginate(github.rest.issues.listComments, issue);
             const completed = process.env.SUBMISSION_AGENT_RESULT === 'success' &&
-              process.env.SUBMISSION_SAFE_OUTPUTS_RESULT === 'success';
+              process.env.SUBMISSION_SAFE_OUTPUTS_RESULT === 'success' &&
+              [process.env.SUBMISSION_ITEMS_FAILED, process.env.SUBMISSION_ITEMS_DEFERRED,
+                process.env.SUBMISSION_ITEMS_CANCELLED].every(count => count === '0');
             if (completed && comments.some(comment =>
               (comment.user?.type === 'Bot' ||
                 String(comment.id) === process.env.SUBMISSION_COMMENT_ID) &&
@@ -43,7 +48,7 @@ jobs:
               : `**Outcome: Blocked.** ${completed ? 'No submission outcome was reported.' : 'Workflow processing did not complete; any earlier agent outcome does not confirm completion.'} A maintainer should inspect this run and rerun validation; this is not a confirmed submission defect.${prLink}`;
             await github.rest.issues.createComment({
               ...issue,
-              body: `${outcome}\n\nAgent: ${process.env.SUBMISSION_AGENT_RESULT}; safe outputs: ${process.env.SUBMISSION_SAFE_OUTPUTS_RESULT}.\n\n[Workflow run](${runUrl})`
+              body: `${outcome}\n\nAgent: ${process.env.SUBMISSION_AGENT_RESULT}; safe outputs: ${process.env.SUBMISSION_SAFE_OUTPUTS_RESULT}. Items failed: ${process.env.SUBMISSION_ITEMS_FAILED || 'unknown'}; deferred: ${process.env.SUBMISSION_ITEMS_DEFERRED || 'unknown'}; cancelled: ${process.env.SUBMISSION_ITEMS_CANCELLED || 'unknown'}.\n\n[Workflow run](${runUrl})`
             });
 ---
 
@@ -103,4 +108,6 @@ than a bot. If the agent or safe outputs fail, report that incomplete processing
 even when an earlier outcome comment exists.
 Incomplete processing takes precedence over PR publication; include the actual
 PR link when available, but keep the outcome Blocked until processing completes.
+Successful jobs are not sufficient: safe-output item counts must confirm zero
+failed, deferred, and cancelled items. Missing counts leave completion unconfirmed.
 That fallback does not convert an incomplete check into passed validation.
