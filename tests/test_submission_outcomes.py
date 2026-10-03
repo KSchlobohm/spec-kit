@@ -34,7 +34,7 @@ def test_submission_reporting_is_wired_into_compiled_workflow(kind):
     assert job["if"] == _reporting_job()["if"]
     assert job["permissions"] == {"issues": "write"}
     report_step = next(
-        step for step in job["steps"] if step["name"] == "Report missing submission outcome"
+        step for step in job["steps"] if step["name"] == "Report submission outcome"
     )
     assert report_step == _reporting_job()["steps"][0]
     assert "{{#runtime-import .github/workflows/shared/catalog-submission.md}}" in (
@@ -75,7 +75,8 @@ const record = (api, args) => {
 const github = {
   rest: {issues: {
     listComments: 'listComments',
-    createComment: async args => { record('createComment', args); }
+    createComment: async args => { record('createComment', args); },
+    updateComment: async args => { record('updateComment', args); }
   }},
   paginate: async (api, args) => { record(api, args); return input.comments; }
 };
@@ -134,7 +135,10 @@ def test_silent_runs_report_blocked_without_claiming_submission_failed(agent, sa
     assert "not a confirmed submission defect" in comment["body"]
     assert "maintainer" in comment["body"]
     assert "[Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)" in comment["body"]
-    assert "/pull/" not in comment["body"]
+    if pr:
+        assert "https://github.com/owner/repo/pull/37" in comment["body"]
+    else:
+        assert "/pull/" not in comment["body"]
 
 
 @requires_node
@@ -240,3 +244,157 @@ def test_unactivated_workflows_do_not_comment(activation_result):
 def test_reporting_api_failures_are_not_silenced(fail_api):
     result = _run_report(fail_api=fail_api)
     assert result["error"] == f"API failure: {fail_api}"
+
+
+RUN_LINK = "[Workflow run](https://github.com/owner/repo/actions/runs/123/attempts/2)"
+PUBLICATION = (
+    "<!-- submission-publication:start -->\n"
+    "**Outcome: PR requested.**\n\n"
+    "Draft PR publication is pending; its link is not yet available.\n"
+    "Next step for maintainers: Review the draft PR after publication.\n"
+    "<!-- submission-publication:end -->"
+)
+EVIDENCE = (
+    "<details>\n<summary>Validation evidence</summary>\n\n"
+    "Archive HTTP 200; SHA-256: `abc123`; catalog JSON valid.\n"
+    "Catalog timestamp updated; documentation already current.\n"
+    "</details>"
+)
+REQUEST_BODY = f"{PUBLICATION}\n\n{EVIDENCE}\n\n{RUN_LINK}"
+
+
+@requires_node
+@pytest.mark.parametrize(("author_type", "comment_id"), [("Bot", ""), ("User", "17")])
+def test_confirmed_publication_updates_owned_outcome_preserving_evidence(author_type, comment_id):
+    footer = "\n\n<!-- gh-aw-agentic-workflow: Test, id: 123 -->"
+    result = _run_report(pr_number="37", comment_id=comment_id, comments=[{
+        "id": 17, "user": {"type": author_type}, "body": REQUEST_BODY + footer,
+    }])
+    assert result["error"] is None
+    assert [call["api"] for call in result["calls"]] == ["listComments", "updateComment"]
+    updated = result["calls"][-1]["args"]
+    assert updated["comment_id"] == 17
+    assert "issue_number" not in updated
+    body = updated["body"]
+    assert "**Outcome: PR created.**" in body
+    assert "https://github.com/owner/repo/pull/37" in body
+    assert "Next step for maintainers: Review the draft PR" in body
+    assert EVIDENCE in body
+    assert RUN_LINK in body
+    assert "pending" not in body
+    assert "not yet available" not in body
+    assert body.endswith(f"\n\n{EVIDENCE}\n\n{RUN_LINK}{footer}")
+
+
+@requires_node
+def test_reconciled_publication_does_not_create_or_update_duplicate():
+    first = _run_report(pr_number="37", comments=[{
+        "id": 17, "user": {"type": "Bot"}, "body": REQUEST_BODY,
+    }])
+    body = first["calls"][-1]["args"]["body"]
+    second = _run_report(pr_number="37", comments=[{
+        "id": 17, "user": {"type": "Bot"}, "body": body,
+    }])
+    assert second["error"] is None
+    assert [call["api"] for call in second["calls"]] == ["listComments"]
+
+
+@requires_node
+@pytest.mark.parametrize("comment", [
+    {"id": 18, "user": {"type": "User"}, "body": REQUEST_BODY},
+    {"id": 17, "user": {"type": "Bot"}, "body": REQUEST_BODY.replace("/attempts/2)", "/attempts/1)")},
+    {"id": 17, "user": {"type": "Bot"}, "body": REQUEST_BODY.replace("/attempts/2)", "/attempts/20)")},
+    {"id": 17, "user": {"type": "Bot"}, "body": f"Unrelated discussion.\n\n{RUN_LINK}"},
+])
+def test_publication_does_not_modify_human_unrelated_or_other_attempt_comments(comment):
+    result = _run_report(pr_number="37", comment_id="19", comments=[comment])
+    assert result["error"] is None
+    assert [call["api"] for call in result["calls"]] == ["listComments", "createComment"]
+    assert "**Outcome: PR created.**" in result["calls"][-1]["args"]["body"]
+
+
+@requires_node
+@pytest.mark.parametrize("outcome", [
+    "Wrong submission type", "Needs clarification", "Failed", "Blocked",
+])
+def test_publication_does_not_upgrade_nonpublication_outcomes(outcome):
+    result = _run_report(pr_number="37", comments=[{
+        "id": 17, "user": {"type": "Bot"},
+        "body": f"**Outcome: {outcome}.**\n\nEvidence and next step.\n\n{REQUEST_BODY}",
+    }])
+    assert result["error"] is None
+    assert [call["api"] for call in result["calls"]] == ["listComments"]
+
+
+@requires_node
+def test_unpublished_request_is_not_upgraded():
+    result = _run_report(comments=[{
+        "id": 17, "user": {"type": "Bot"}, "body": REQUEST_BODY,
+    }])
+    assert result["error"] is None
+    assert [call["api"] for call in result["calls"]] == ["listComments"]
+
+
+@requires_node
+@pytest.mark.parametrize(("agent", "safe"), [
+    ("failure", "success"), ("success", "failure"), ("cancelled", "success"),
+    ("success", "cancelled"),
+])
+def test_incomplete_processing_keeps_published_link_without_updating_request(agent, safe):
+    result = _run_report(pr_number="37", agent_result=agent, safe_result=safe, comments=[{
+        "id": 17, "user": {"type": "Bot"}, "body": REQUEST_BODY,
+    }])
+    assert result["error"] is None
+    assert [call["api"] for call in result["calls"]] == ["listComments", "createComment"]
+    body = result["calls"][-1]["args"]["body"]
+    assert "**Outcome: Blocked.**" in body
+    assert "https://github.com/owner/repo/pull/37" in body
+
+
+@requires_node
+def test_publication_update_failure_is_not_silenced_or_replaced_by_duplicate():
+    result = _run_report(pr_number="37", fail_api="updateComment", comments=[{
+        "id": 17, "user": {"type": "Bot"}, "body": REQUEST_BODY,
+    }])
+    assert result["error"] == "API failure: updateComment"
+    assert [call["api"] for call in result["calls"]] == ["listComments", "updateComment"]
+
+
+@requires_node
+@pytest.mark.parametrize("body", [
+    f"**Outcome: PR requested.**\n\nLegacy publication prose.\n\n{RUN_LINK}",
+    REQUEST_BODY.replace("<!-- submission-publication:end -->", ""),
+    f"{PUBLICATION}\n\n{REQUEST_BODY}",
+    REQUEST_BODY.replace("**Outcome: PR requested.**", "No publication outcome."),
+    REQUEST_BODY.replace("<!-- submission-publication:end -->", "") +
+    "\n<!-- submission-publication:end -->\n<!-- submission-publication:end -->",
+    f"**Outcome: PR requested.**\n\n{REQUEST_BODY}",
+])
+def test_missing_or_ambiguous_publication_block_fails_visibly(body):
+    result = _run_report(pr_number="37", comment_id="17", comments=[{
+        "id": 17, "user": {"type": "Bot"}, "body": body,
+    }])
+    # Without an outcome marker, this is unrelated rather than a publication request.
+    if "Outcome:" not in body:
+        assert result["error"] is None
+        assert result["calls"][-1]["api"] == "createComment"
+    else:
+        assert result["error"] == "Cannot reconcile PR requested outcome: expected one publication block containing its outcome."
+        assert [call["api"] for call in result["calls"]] == ["listComments", "createComment"]
+        blocked = result["calls"][-1]["args"]["body"]
+        assert blocked.startswith("**Outcome: Blocked.**")
+        assert "publication section" in blocked
+        assert "Next step for maintainers:" in blocked
+        assert "https://github.com/owner/repo/pull/37" in blocked
+        assert RUN_LINK in blocked
+        assert "not a confirmed submission defect" in blocked
+
+
+@requires_node
+def test_reconciliation_fallback_api_failure_is_not_silenced():
+    result = _run_report(pr_number="37", fail_api="createComment", comments=[{
+        "id": 17, "user": {"type": "Bot"},
+        "body": f"**Outcome: PR requested.**\n\n{EVIDENCE}\n\n{RUN_LINK}",
+    }])
+    assert result["error"] == "API failure: createComment"
+    assert [call["api"] for call in result["calls"]] == ["listComments", "createComment"]

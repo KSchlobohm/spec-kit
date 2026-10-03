@@ -227,11 +227,28 @@ maintainer review.
 Submission labels start these workflows. The agent uses the title and
 type-specific issue-form fields together, rather than requiring exact title
 punctuation. Wrong-type or unclear submissions receive an explanatory issue
-comment; maintainers decide how to relabel or clarify them. Every processing
-path reports an outcome and workflow run link. A separate reporting job adds
-a fallback status if the run ends without an outcome comment, distinguishing
-a published draft PR from incomplete processing. Agent or safe-output failures
-still receive a status comment if an earlier agent comment was already posted.
+comment. Authors supply missing information or correct metadata; maintainers
+decide labels, rerun validation, and review draft PRs. Comments describe specific
+changes needed without assigning automation failures to the author. Confirmed
+submission defects retain the `Failed` outcome; infrastructure failures are
+`Blocked`. Lengthy evidence can be collapsed beneath the reason and next step.
+Editing an issue alone does not start validation: a maintainer reruns the
+workflow or removes and reapplies the appropriate submission label.
+
+Every processing path reports an outcome and exact workflow run-attempt link.
+After confirmed completion and publication, a separate reporting job updates
+the workflow-owned comment's publication section from `PR requested` to
+`PR created`, preserving validation evidence and adding the actual draft PR link
+and maintainer review step. It adds a fallback status if no outcome was reported.
+Agent or safe-output failures, nonzero failed/deferred/cancelled item counts,
+and missing counts leave processing `Blocked`, even if an earlier comment or
+published PR exists; the PR link is retained when available. Wrong-type,
+clarification, and validation-failure outcomes are not upgraded merely because
+a PR exists. If the publication section is missing or ambiguous, the reporter
+preserves the original comment and evidence, posts an actionable,
+maintainer-owned `Blocked` outcome with the confirmed PR and run-attempt links,
+and fails visibly rather than rewriting arbitrary prose. API failures also
+propagate.
 
 Catalog discovery does not audit or endorse community code; users must
 review third-party components before use.
