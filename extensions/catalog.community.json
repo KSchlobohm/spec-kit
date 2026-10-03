@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-10-02T00:00:00Z",
+  "updated_at": "2026-10-03T00:00:00Z",
   "catalog_url": "https://raw.githubusercontent.com/github/spec-kit/main/extensions/catalog.community.json",
   "extensions": {
     "adrkit": {
@@ -6428,6 +6428,7 @@
       "author": "Dave Sharpe",
       "version": "1.2.0",
       "download_url": "https://github.com/datastone-inc/spec-kit-verify-tasks/archive/refs/tags/v1.2.0.zip",
+      "sha256": "12763b4045690c4300b9486035a6359b3a6f5ce8e4cee3c357464aa53f7ceb0f",
       "repository": "https://github.com/datastone-inc/spec-kit-verify-tasks",
       "homepage": "https://github.com/datastone-inc/spec-kit-verify-tasks",
       "documentation": "https://github.com/datastone-inc/spec-kit-verify-tasks/blob/master/README.md",
@@ -6452,7 +6453,7 @@
       "downloads": 0,
       "stars": 0,
       "created_at": "2026-03-16T00:00:00Z",
-      "updated_at": "2026-09-17T00:00:00Z"
+      "updated_at": "2026-10-03T00:00:00Z"
     },
     "version-guard": {
       "name": "Version Guard",
