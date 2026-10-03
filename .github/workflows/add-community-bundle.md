@@ -314,7 +314,10 @@ prevents a required check, validation is blocked by the workflow environment:
 
 If there are no environment blockers and a completed check found a submission defect:
 
-1. Comment once with every failed check and a specific correction.
+1. Follow the shared comment guidance: explain the specific changes needed,
+   list each failed check, and use "Next step for the author: Please ..."
+   for corrections. Ask a maintainer to rerun validation after the issue is
+   updated; editing the issue alone does not start a run.
 2. Remove `validation-passed`.
 3. Add `validation-failed`; add `needs-info` when submitter input is needed.
 4. Stop without editing files or creating a pull request.
@@ -428,6 +431,10 @@ The commit and PR description must summarize the catalog and documentation
 changes, list the validation results, include
 `Closes #${{ github.event.issue.number }}`, and mention the submitter with
 `cc @<issue-author>`.
+
+Emit one issue outcome comment using the shared **PR requested** publication
+section. Keep validation evidence outside that section; the reporting job
+updates it with the actual draft PR link after confirmed publication.
 
 End the commit message with this authorship trailer:
 
