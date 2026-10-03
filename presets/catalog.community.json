@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-10-02T00:00:00Z",
+  "updated_at": "2026-10-03T00:00:00Z",
   "catalog_url": "https://raw.githubusercontent.com/github/spec-kit/main/presets/catalog.community.json",
   "presets": {
     "a11y-governance": {
@@ -156,6 +156,7 @@
       "author": "Thorsten Hindermann",
       "repository": "https://github.com/hindermath/spec-kit-preset-autonomous-run-governance",
       "download_url": "https://github.com/hindermath/spec-kit-preset-autonomous-run-governance/archive/refs/tags/v0.4.4.zip",
+      "sha256": "2478d5fe193abe677601a024f5fe18efae635e8a94bba66b50b59c4b34a8fd8d",
       "homepage": "https://github.com/hindermath/spec-kit-preset-autonomous-run-governance",
       "documentation": "https://github.com/hindermath/spec-kit-preset-autonomous-run-governance/blob/v0.4.4/README.md",
       "license": "MIT",
@@ -175,7 +176,7 @@
         "sdd"
       ],
       "created_at": "2026-07-13T00:00:00Z",
-      "updated_at": "2026-09-14T00:00:00Z"
+      "updated_at": "2026-10-03T00:00:00Z"
     },
     "canon-core": {
       "name": "Canon Core",
