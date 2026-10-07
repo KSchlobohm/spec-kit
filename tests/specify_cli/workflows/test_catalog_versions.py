@@ -6,6 +6,7 @@ import hashlib
 import io
 import time
 import zipfile
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -53,6 +54,14 @@ def _archive(version: str, workflow_id: str = "history-wf", requires=None) -> by
         info = zipfile.ZipInfo("workflow.yml", date_time=(1980, 1, 1, 0, 0, 0))
         archive.writestr(info, yaml.safe_dump(document))
     return output.getvalue()
+
+
+def test_archive_fixture_is_stable_across_clock_ticks():
+    with patch("zipfile.time.localtime", return_value=(2020, 1, 1, 0, 0, 0)):
+        first = _archive("2.0.0")
+    with patch("zipfile.time.localtime", return_value=(2020, 1, 1, 0, 0, 2)):
+        second = _archive("2.0.0")
+    assert first == second
 
 
 def _entry() -> dict:

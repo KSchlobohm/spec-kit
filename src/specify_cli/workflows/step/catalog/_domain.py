@@ -40,6 +40,19 @@ class StepValidationError(StepCatalogError):
     """Validation error for step catalog config or step data."""
 
 
+class _DuplicateCatalogField(StepCatalogError):
+    """An ambiguous JSON object in a step catalog."""
+
+
+def _unique_json_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateCatalogField(f"Duplicate field '{key}' in step catalog.")
+        result[key] = value
+    return result
+
+
 # ---------------------------------------------------------------------------
 # StepCatalogEntry
 # ---------------------------------------------------------------------------
@@ -311,6 +324,15 @@ class StepCatalog:
             raise StepValidationError(
                 f"Failed to read catalog config {config_path}: {exc}"
             ) from exc
+        indexed_entries = self._parse_catalog_config(data, config_path)
+        if indexed_entries is None:
+            return None
+        return [entry for _, entry in indexed_entries]
+
+    def _parse_catalog_config(
+        self, data: Any, config_path: Path
+    ) -> list[tuple[int, StepCatalogEntry]] | None:
+        """Validate and order sources, retaining their original YAML positions."""
         # Same two guards as WorkflowCatalog._load_catalog_config above, kept in
         # lockstep: this is the step-catalog twin of that loader and read the
         # same way. Dropping ``or {}`` stops a falsy non-mapping top level from
@@ -334,7 +356,7 @@ class StepCatalog:
         if not catalogs_data:
             return None
 
-        entries: list[StepCatalogEntry] = []
+        entries: list[tuple[int, StepCatalogEntry]] = []
         for idx, item in enumerate(catalogs_data):
             if not isinstance(item, dict):
                 raise StepValidationError(
@@ -373,15 +395,18 @@ class StepCatalog:
             else:
                 install_allowed = bool(raw_install)
             entries.append(
-                StepCatalogEntry(
-                    url=url,
-                    name=str(item.get("name", f"catalog-{idx + 1}")),
-                    priority=priority,
-                    install_allowed=install_allowed,
-                    description=str(item.get("description", "")),
+                (
+                    idx,
+                    StepCatalogEntry(
+                        url=url,
+                        name=str(item.get("name", f"catalog-{idx + 1}")),
+                        priority=priority,
+                        install_allowed=install_allowed,
+                        description=str(item.get("description", "")),
+                    ),
                 )
             )
-        entries.sort(key=lambda e: e.priority)
+        entries.sort(key=lambda item: item[1].priority)
         if not entries:
             raise StepValidationError(
                 f"Catalog config {config_path} contains {len(catalogs_data)} "
@@ -470,9 +495,11 @@ class StepCatalog:
         if cache_safe and not force_refresh and self._is_url_cache_valid(entry.url):
             try:
                 with open(cache_file, encoding="utf-8") as f:
-                    cached = json.load(f)
+                    cached = json.load(f, object_pairs_hook=_unique_json_fields)
                 if isinstance(cached, dict):
                     return cached
+            except _DuplicateCatalogField:
+                raise
             except (UnicodeDecodeError, json.JSONDecodeError, OSError):
                 # Ignore invalid/unreadable cache and fall back to fetching from source.
                 pass
@@ -530,15 +557,20 @@ class StepCatalog:
                         max_bytes=_max_json_catalog_bytes(),
                         error_type=StepCatalogError,
                         label="step catalog",
-                    ).decode("utf-8")
+                    ).decode("utf-8"),
+                    object_pairs_hook=_unique_json_fields,
                 )
+        except _DuplicateCatalogField:
+            raise
         except Exception as exc:
             if cache_safe and cache_file.exists():
                 try:
                     with open(cache_file, encoding="utf-8") as f:
-                        cached = json.load(f)
+                        cached = json.load(f, object_pairs_hook=_unique_json_fields)
                     if isinstance(cached, dict):
                         return cached
+                except _DuplicateCatalogField:
+                    raise
                 except (json.JSONDecodeError, ValueError, OSError):
                     # Stale-cache read failed; let the original fetch error propagate.
                     pass
@@ -574,6 +606,8 @@ class StepCatalog:
         for entry in reversed(catalogs):
             try:
                 data = self._fetch_single_catalog(entry, force_refresh)
+            except _DuplicateCatalogField:
+                raise
             except StepCatalogError:
                 fetch_errors += 1
                 continue
@@ -586,6 +620,7 @@ class StepCatalog:
                     step_data["_install_allowed"] = entry.install_allowed
                     merged[step_id] = step_data
             elif isinstance(steps, list):
+                seen_in_source: set[str] = set()
                 for step_data in steps:
                     if not isinstance(step_data, dict):
                         continue
@@ -594,6 +629,11 @@ class StepCatalog:
                         continue
                     step_id = str(raw_step_id).strip()
                     if step_id:
+                        if step_id in seen_in_source:
+                            raise StepCatalogError(
+                                f"Duplicate step ID '{step_id}' in catalog '{entry.name}'."
+                            )
+                        seen_in_source.add(step_id)
                         step_data["id"] = step_id
                         step_data["_catalog_name"] = entry.name
                         step_data["_install_allowed"] = entry.install_allowed
@@ -609,10 +649,13 @@ class StepCatalog:
         query: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search step types across all configured catalogs."""
+        from ._versions import available_versions
+
         merged = self._get_merged_steps()
         results: list[dict[str, Any]] = []
 
         for step_id, step_data in merged.items():
+            available_versions(step_data, step_id)
             step_data.setdefault("id", step_id)
             if query:
                 q = query.lower()
@@ -628,13 +671,18 @@ class StepCatalog:
             results.append(step_data)
         return results
 
-    def get_step_info(self, step_id: str) -> dict[str, Any] | None:
-        """Get details for a specific step from the catalog."""
+    def get_step_info(
+        self, step_id: str, version: str | None = None
+    ) -> dict[str, Any] | None:
+        """Get the current or an exact release from the winning catalog."""
+        from ._versions import select_release
+
         merged = self._get_merged_steps()
         step = merged.get(step_id)
         if step:
             step.setdefault("id", step_id)
-        return step
+            return select_release(step, step_id, version)
+        return None
 
     def get_catalog_configs(self) -> list[dict[str, Any]]:
         """Return current catalog configuration as a list of dicts."""
@@ -734,7 +782,12 @@ class StepCatalog:
         return "added"
 
     def remove_catalog(self, index: int) -> str:
-        """Remove a catalog source by index (0-based). Returns the removed name."""
+        """Remove a project source by its index in the active catalog list."""
+        if os.environ.get("SPECKIT_STEP_CATALOG_URL", "").strip():
+            raise StepValidationError(
+                "The active catalog comes from SPECKIT_STEP_CATALOG_URL. "
+                "Unset that variable to remove a project catalog source."
+            )
         config_path = self.project_root / ".specify" / "step-catalogs.yml"
         if not config_path.exists():
             raise StepValidationError("No step catalog config file found.")
@@ -745,25 +798,15 @@ class StepCatalog:
             raise StepValidationError(
                 f"Catalog config file is unreadable or malformed: {exc}"
             ) from exc
-        if data is None:
-            data = {}
-        elif not isinstance(data, dict):
+        entries = self._parse_catalog_config(data, config_path) or []
+
+        if index < 0 or index >= len(entries):
             raise StepValidationError(
-                "Catalog config file is corrupted (expected a mapping)."
-            )
-        catalogs = data.get("catalogs", [])
-        if not isinstance(catalogs, list):
-            raise StepValidationError(
-                "Catalog config 'catalogs' must be a list."
+                f"Catalog index {index} out of range (0-{len(entries) - 1})."
             )
 
-        if index < 0 or index >= len(catalogs):
-            raise StepValidationError(
-                f"Catalog index {index} out of range (0-{len(catalogs) - 1})."
-            )
-
-        removed = catalogs.pop(index)
-        data["catalogs"] = catalogs
+        source_index, entry = entries[index]
+        data["catalogs"].pop(source_index)
 
         try:
             with open(config_path, "w", encoding="utf-8") as f:
@@ -775,6 +818,4 @@ class StepCatalog:
                 f"Failed to write catalog config {config_path}: {exc}"
             ) from exc
 
-        if isinstance(removed, dict):
-            return removed.get("name", f"catalog-{index + 1}")
-        return f"catalog-{index + 1}"
+        return entry.name
