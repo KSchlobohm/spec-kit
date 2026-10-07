@@ -174,6 +174,41 @@ intentionally gitignored. The automated assessment workflow is ephemeral and
 neither commits nor pushes its generated Copilot skills, so its output does not
 enter repository history.
 
+### PR description assessment
+
+Maintainers can apply `pr-assess` to an open pull request to compare its
+description with the cumulative code changes. The
+[workflow](.github/workflows/pr-assess.md) reports material changes omitted
+from the description and claims contradicted by the diff, with code evidence
+and suggested description corrections. It does not judge author intent,
+perform general code review, or approve the PR.
+
+Each assessment posts one comment and applies one outcome label:
+
+| Label | Meaning |
+|---|---|
+| `pr-description-aligned` | The assessed changes are adequately described, with no material omissions or contradictions found |
+| `pr-description-needs-update` | The description omits or contradicts a material change |
+| `pr-description-inconclusive` | Evidence or changed-file coverage is insufficient, or the PR changed during assessment; the comment explains the limitation |
+
+The workflow supports repository and fork PRs without checking out or executing
+contributor code. Applying `pr-assess` to an issue produces a comment directing
+the requester to the relevant open PR; applying it to a closed or merged PR
+produces a "not assessed" comment. Neither case changes outcome labels.
+Unrelated labels do not request an assessment. Normal harness authorization
+and bot-actor exclusions still apply.
+
+To reassess, remove and re-add `pr-assess`. It is not removed automatically,
+and edits or new commits do not trigger a run. A completed reassessment replaces
+earlier outcome labels but preserves comments and unrelated labels. Reports
+identify the assessed revision; an earlier label is not evidence about later
+changes, and a failed run does not refresh it. Definitions of
+[material change and assessment coverage](GLOSSARY.md) explain the report terms.
+
+Repository setup requires the `pr-assess` trigger label, all three outcome
+labels above, and the existing `COPILOT_GITHUB_TOKEN` secret. The trusted
+workflow must be present on the target base branch before use.
+
 ### Workflow expectations
 
 When working on spec-kit:
