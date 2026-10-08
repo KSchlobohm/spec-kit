@@ -137,8 +137,8 @@ Compare in both directions:
 
 For every discrepancy, quote the description claim or state that no corresponding
 claim exists; cite revision-linked file/line evidence, explain the actual effect,
-state confidence, and propose the smallest description correction. Do not infer
-an omission from a file name alone or from a hypothetical consequence.
+and propose the smallest description correction. Do not infer an omission from
+a file name alone or from a hypothetical consequence.
 
 Choose exactly one verdict:
 
@@ -164,33 +164,44 @@ If any value changed, or the final read fails, use **inconclusive** and explain
 that the assessed inputs could not be confirmed.
 
 Use `add_comment` to queue **one** assessment report on the triggering PR before
-queuing label changes. Lead with the verdict and a short rationale:
+queuing label changes. Begin with
+`**PR description assessment: <aligned | needs-update | inconclusive>.**`
+followed by exactly one concise rationale sentence.
 
-```markdown
-**PR description assessment: <aligned | needs-update | inconclusive>.** <reason>
+Follow it with one compact reviewed-files line. For complete coverage, use:
+`Reviewed all <changed files> files at <linked short assessed revision>.`
+For incomplete coverage, use:
+`Reviewed <examined files>/<changed files> files at <linked short assessed revision>.`
+Link the short assessed revision when known. If a file count or the revision is
+unavailable, use the incomplete form with `unknown` for that value and explain
+the missing evidence in the inconclusive rationale. Do not link `unknown`.
 
-**Revision:** <assessed head SHA, linked when known>
-**Coverage:** <examined files>/<changed files> - <complete | incomplete>
-**Material changes:** <documented count> documented, <omission count> omitted,
-<contradiction count> contradicted, <unresolved count> unresolved.
+Use these verdict-specific forms:
 
-| Material change | Description claim | Finding and evidence |
-| --- | --- | --- |
-| <grouped change> | <quote or "not described"> | <result, code citation, confidence> |
+- **aligned:** Stop after the reviewed-files line. Do not add a findings table or
+  suggested-update section.
+- **needs-update:** After the reviewed-files line, include only evidenced material
+  omissions or contradictions in this compact two-column table. Do not include
+  correctly documented changes. Keep revision-linked evidence for every row.
 
-**Suggested description updates:** <specific corrections, or "None identified">
-**Limitations:** <missing evidence or "None identified">
+  ```markdown
+  | What needs attention | Evidence |
+  | --- | --- |
+  | <observable omission or contradiction> | <revision-linked evidence> |
+  ```
 
-This assesses description alignment, not author intent or general code quality.
-It applies to the revision examined. Remove and re-add `pr-assess` to reassess.
-```
+  Then add `**Suggested update:**` with a short human reviewer note describing
+  the observable impact and the smallest description correction. Do not use
+  changelog or tool directives such as `state explicitly`, `remove`, or `qualify`.
+- **inconclusive:** Explain the missing, unresolved, or unavailable evidence in
+  the rationale. When useful, use the same compact two-column table for that
+  evidence only. Do not add a `Limitations` heading or `Suggested update`
+  section.
 
-Use **unknown**, not invented counts or revisions, when data cannot be read.
-Count grouped material changes, not files, and classify each group once; do not
-invent an overall quality score. Keep the report below 65,000 characters.
-Condense prose rather than dropping findings or coverage gaps. If the report
-cannot represent the assessment fully, use inconclusive and explain why.
-Preserve the harness's generated-by footer.
+Use **unknown**, not invented file counts or revisions, when data cannot be read.
+Keep the report below 65,000 characters. Condense prose rather than dropping
+findings or coverage gaps. If the report cannot represent the assessment fully,
+use inconclusive and explain why. Preserve the harness's generated-by footer.
 
 Applying the outcome label is your responsibility, not a recommendation for a
 maintainer. Use `remove_labels` to remove any existing outcome labels other than

@@ -1776,9 +1776,90 @@ def test_pr_assess_missing_evidence_routes_to_an_explained_inconclusive_report()
     reporting = text.split("## Step 4", 1)[1].split("## Guardrails", 1)[0]
     assert "Use `add_comment` to queue **one** assessment report" in reporting
     assert "before queuing label changes" in reporting
-    assert "Use **unknown**, not invented counts or revisions" in reporting
+    assert "Use **unknown**, not invented file counts or revisions" in reporting
+    assert (
+        "Explain the missing, unresolved, or unavailable evidence in the rationale."
+    ) in reporting
+    assert "use the same compact two-column table for that evidence only" in reporting
     assert "exactly one **plain string**" in reporting
     assert "Never emit label objects with `suggest: true` or suggestion-only output." in reporting
+
+
+def test_pr_assess_public_report_contract_prioritizes_human_readability():
+    source_text, _, _, _ = _agentic_workflow("pr-assess")
+    comparison = " ".join(
+        source_text.split("## Step 3 - Compare Claims and Material Changes", 1)[1]
+        .split("## Step 4", 1)[0].split()
+    )
+    reporting = " ".join(
+        source_text.split("## Step 4 - Report and Apply the Outcome", 1)[1]
+        .split("Applying the outcome label", 1)[0].split()
+    )
+
+    assert "not general code review" in source_text
+    assert "not presumed deception or author intent" in source_text
+    assert "state confidence" not in comparison
+    assert (
+        "**PR description assessment: <aligned | needs-update | inconclusive>.**"
+    ) in reporting
+    assert "exactly one concise rationale sentence" in reporting
+    assert (
+        "Reviewed all <changed files> files at <linked short assessed revision>."
+    ) in reporting
+    assert (
+        "Reviewed <examined files>/<changed files> files at "
+        "<linked short assessed revision>."
+    ) in reporting
+    assert (
+        "If a file count or the revision is unavailable, use the incomplete form "
+        "with `unknown` for that value"
+    ) in reporting
+    assert "explain the missing evidence in the inconclusive rationale" in reporting
+    assert "Do not link `unknown`." in reporting
+
+    aligned = reporting.split("- **aligned:**", 1)[1].split("- **needs-update:**", 1)[0]
+    assert "Stop after the reviewed-files line" in aligned
+    assert "Do not add a findings table or suggested-update section." in aligned
+
+    needs_update = reporting.split("- **needs-update:**", 1)[1].split(
+        "- **inconclusive:**", 1
+    )[0]
+    assert "| What needs attention | Evidence |" in needs_update
+    assert "only evidenced material omissions or contradictions" in needs_update
+    assert "Do not include correctly documented changes." in needs_update
+    assert "revision-linked evidence for every row" in needs_update
+    assert "**Suggested update:**" in needs_update
+    assert "short human reviewer note describing the observable impact" in needs_update
+    assert "Do not use changelog or tool directives" in needs_update
+    for directive in ("state explicitly", "remove", "qualify"):
+        assert f"`{directive}`" in needs_update
+
+    inconclusive = reporting.split("- **inconclusive:**", 1)[1]
+    assert "missing, unresolved, or unavailable evidence in the rationale" in inconclusive
+    assert "same compact two-column table for that evidence only" in inconclusive
+    assert (
+        "Do not add a `Limitations` heading or `Suggested update` section."
+    ) in inconclusive
+
+    for public_noise in (
+        "**Revision:**",
+        "**Coverage:**",
+        "**Material changes:**",
+        "documented count",
+        "omission count",
+        "contradiction count",
+        "unresolved count",
+        "Description claim",
+        "confidence",
+        "**Limitations:**",
+        "This assesses description alignment, not author intent or general code quality.",
+        "It applies to the revision examined.",
+        "Remove and re-add `pr-assess` to reassess.",
+    ):
+        assert public_noise not in reporting
+    assert "author intent" not in reporting
+    assert "general code quality" not in reporting
+    assert "Preserve the harness's generated-by footer." in reporting
 
 
 def test_pr_assess_checks_input_stability_before_reporting_a_verdict():
