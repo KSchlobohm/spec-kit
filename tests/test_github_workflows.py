@@ -1801,6 +1801,10 @@ def test_pr_assess_public_report_contract_prioritizes_human_readability():
     assert "not presumed deception or author intent" in source_text
     assert "state confidence" not in comparison
     assert (
+        "Assess internally how strongly the evidence supports each discrepancy"
+    ) in comparison
+    assert "do not publish confidence scores in the assessment comment" in comparison
+    assert (
         "**PR description assessment: <aligned | needs-update | inconclusive>.**"
     ) in reporting
     assert "exactly one concise rationale sentence" in reporting

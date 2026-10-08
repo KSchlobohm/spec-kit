@@ -140,6 +140,9 @@ claim exists; cite revision-linked file/line evidence, explain the actual effect
 and propose the smallest description correction. Do not infer an omission from
 a file name alone or from a hypothetical consequence.
 
+Assess internally how strongly the evidence supports each discrepancy; do not
+publish confidence scores in the assessment comment.
+
 Choose exactly one verdict:
 
 - **aligned**: All changed files are accounted for, the evidence is sufficient,
