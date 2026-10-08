@@ -1645,9 +1645,9 @@ console.log(JSON.stringify(results));
 def test_pr_assess_uses_trusted_instructions_without_executing_pr_code():
     _, compiled_text, source, compiled = _agentic_workflow("pr-assess")
     metadata = _gh_aw_metadata(compiled_text)
-    assert metadata["compiler_version"] == "v0.88.7"
+    assert metadata["compiler_version"] == "v0.89.21"
     assert metadata["strict"] is True
-    assert metadata["engine_versions"] == {"copilot": "1.0.80"}
+    assert metadata["engine_versions"] == {"copilot": "1.0.87"}
     assert source["checkout"] is False
     assert source["tools"] == {
         "bash": False,
@@ -1679,6 +1679,11 @@ def test_pr_assess_uses_trusted_instructions_without_executing_pr_code():
     ) == ["get_file_contents", "issue_read", "pull_request_read"]
     refs = {match.group("ref") for match in USES_RE.finditer(compiled_text)}
     assert refs and all(PINNED_SHA_RE.search(ref) for ref in refs)
+    assert {
+        ref for ref in refs if ref.startswith("github/gh-aw-actions/")
+    } == {
+        "github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60"
+    }
 
 
 def test_pr_assess_outputs_are_bounded_to_the_triggering_item():
