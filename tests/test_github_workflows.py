@@ -1780,7 +1780,8 @@ def test_pr_assess_missing_evidence_routes_to_an_explained_inconclusive_report()
     assert (
         "Explain the missing, unresolved, or unavailable evidence in the rationale."
     ) in reporting
-    assert "use the same compact two-column table for that evidence only" in reporting
+    assert "retain established findings" in reporting
+    assert "anything left unchecked" in reporting
     assert "exactly one **plain string**" in reporting
     assert "Never emit label objects with `suggest: true` or suggestion-only output." in reporting
 
@@ -1836,7 +1837,10 @@ def test_pr_assess_public_report_contract_prioritizes_human_readability():
 
     inconclusive = reporting.split("- **inconclusive:**", 1)[1]
     assert "missing, unresolved, or unavailable evidence in the rationale" in inconclusive
-    assert "same compact two-column table for that evidence only" in inconclusive
+    assert "same compact two-column table to retain established findings" in inconclusive
+    assert "revision-linked evidence" in inconclusive
+    assert "anything left unchecked" in inconclusive
+    assert "that evidence only" not in inconclusive
     assert (
         "Do not add a `Limitations` heading or `Suggested update` section."
     ) in inconclusive

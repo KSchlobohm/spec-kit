@@ -194,9 +194,9 @@ Use these verdict-specific forms:
   the observable impact and the smallest description correction. Do not use
   changelog or tool directives such as `state explicitly`, `remove`, or `qualify`.
 - **inconclusive:** Explain the missing, unresolved, or unavailable evidence in
-  the rationale. When useful, use the same compact two-column table for that
-  evidence only. Do not add a `Limitations` heading or `Suggested update`
-  section.
+  the rationale. Use the same compact two-column table to retain established
+  findings with revision-linked evidence and show anything left unchecked.
+  Do not add a `Limitations` heading or `Suggested update` section.
 
 Use **unknown**, not invented file counts or revisions, when data cannot be read.
 Keep the report below 65,000 characters. Condense prose rather than dropping
