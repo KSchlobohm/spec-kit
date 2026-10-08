@@ -200,7 +200,8 @@ and bot-actor exclusions still apply.
 
 To reassess, remove and re-add `pr-assess`. It is not removed automatically,
 and edits or new commits do not trigger a run. A completed reassessment replaces
-earlier outcome labels but preserves comments and unrelated labels. Reports
+earlier outcome labels by removing up to two stale outcomes and applying the
+selected verdict, but preserves comments and unrelated labels. Reports
 identify the assessed revision; an earlier label is not evidence about later
 changes, and a failed run does not refresh it. Definitions of
 [material change and assessment coverage](GLOSSARY.md) explain the report terms.

@@ -1690,9 +1690,9 @@ def test_pr_assess_outputs_are_bounded_to_the_triggering_item():
     assert outputs["add_comment"] == source["safe-outputs"]["add-comment"] == {
         "target": "triggering", "max": 1
     }
-    for name in ("add_labels", "remove_labels"):
+    for name, max_labels in (("add_labels", 1), ("remove_labels", 2)):
         assert outputs[name]["target"] == "triggering"
-        assert outputs[name]["max"] == 1
+        assert outputs[name]["max"] == max_labels
         assert set(outputs[name]["allowed"]) == PR_ASSESS_LABELS
         assert "pr-assess" not in outputs[name]["allowed"]
         assert not {"target_repo", "allowed_repos"} & outputs[name].keys()
@@ -1711,6 +1711,29 @@ def test_pr_assess_outputs_are_bounded_to_the_triggering_item():
         "issues": "write", "pull-requests": "write"
     }
     assert source["safe-outputs"]["noop"] == {"report-as-issue": False}
+
+
+@pytest.mark.parametrize("verdict", sorted(PR_ASSESS_LABELS))
+def test_pr_assess_allows_removing_both_stale_outcome_labels(verdict):
+    _, _, source, compiled = _agentic_workflow("pr-assess")
+    agent_steps = compiled["jobs"]["agent"]["steps"]
+    agent_config = json.loads(_workflow_step(
+        agent_steps, "Generate Safe Outputs Config"
+    )["env"]["GH_AW_SAFE_OUTPUTS_CONFIG"])
+    stale_labels = PR_ASSESS_LABELS - {verdict}
+    for removal in (
+        source["safe-outputs"]["remove-labels"],
+        agent_config["remove_labels"],
+        _safe_output_config(compiled)["remove_labels"],
+    ):
+        assert stale_labels <= set(removal["allowed"])
+        assert removal["max"] >= len(stale_labels)
+    tools_meta = json.loads(_workflow_step(
+        agent_steps, "Generate Safe Outputs Tools"
+    )["env"]["GH_AW_TOOLS_META_JSON"])
+    assert "Maximum 2 label(s) can be removed." in (
+        tools_meta["description_suffixes"]["remove_labels"]
+    )
 
 
 def test_pr_assess_misuse_branches_require_a_comment_without_verdict_labels():

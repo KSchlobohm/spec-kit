@@ -48,7 +48,7 @@ safe-outputs:
   remove-labels:
     target: triggering
     allowed: [pr-description-aligned, pr-description-needs-update, pr-description-inconclusive]
-    max: 1
+    max: 2
 ---
 
 # Assess PR Description Alignment
@@ -191,7 +191,8 @@ Preserve the harness's generated-by footer.
 
 Applying the outcome label is your responsibility, not a recommendation for a
 maintainer. Use `remove_labels` to remove any existing outcome labels other than
-the selected verdict, then `add_labels` with exactly one **plain string**:
+the selected verdict (up to two labels), then `add_labels` with exactly one
+**plain string**:
 
 - aligned: `pr-description-aligned`
 - needs-update: `pr-description-needs-update`
