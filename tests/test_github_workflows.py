@@ -1784,17 +1784,23 @@ def test_pr_assess_missing_evidence_routes_to_an_explained_inconclusive_report()
 def test_pr_assess_checks_input_stability_before_reporting_a_verdict():
     source_text, _, _, _ = _agentic_workflow("pr-assess")
     reporting = " ".join(
-        source_text.split("## Step 4", 1)[1].split("## Guardrails", 1)[0].split()
+        source_text.split("## Step 4 - Report and Apply the Outcome", 1)[1]
+        .split("## Guardrails", 1)[0].split()
     )
     before_comment = reporting.split("Use `add_comment`", 1)[0]
-    assert "If you examined code, re-read the PR with `pull_request_read` (`get`)" in before_comment
-    assert "Compare its head SHA, base SHA, and body with the values captured in Step 2." in before_comment
+    assert before_comment.startswith(
+        "Re-read the PR with `pull_request_read` (`get`) before queuing the report."
+    )
+    assert (
+        "If you examined code, compare its head SHA, base SHA, and body with "
+        "the values captured in Step 2."
+    ) in before_comment
     assert "If any value changed, or the final read fails, use **inconclusive**" in before_comment
     assert "Do not substitute the new head SHA for the revision you examined." in before_comment
     assert (
         "If the PR is now closed or merged, queue the Step 1 not-assessed "
         "comment and stop without changing labels."
-    ) in before_comment
+    ) in before_comment.split("If you examined code", 1)[0]
 
 
 def test_pr_assess_compares_description_and_diff_without_overclaiming():

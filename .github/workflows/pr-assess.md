@@ -152,13 +152,16 @@ Choose exactly one verdict:
 
 ## Step 4 - Report and Apply the Outcome
 
-If you examined code, re-read the PR with `pull_request_read` (`get`) before
-queuing the report. Compare its head SHA, base SHA, and body with the values
-captured in Step 2. If any value changed, or the final read fails, use
-**inconclusive** and explain that the assessed inputs could not be confirmed.
-Do not substitute the new head SHA for the revision you examined.
+Re-read the PR with `pull_request_read` (`get`) before queuing the report.
 If the PR is now closed or merged, queue the Step 1 not-assessed comment and
 stop without changing labels.
+
+If you examined code, compare its head SHA, base SHA, and body with the values
+captured in Step 2. Do not substitute the new head SHA for the revision you
+examined.
+
+If any value changed, or the final read fails, use **inconclusive** and explain
+that the assessed inputs could not be confirmed.
 
 Use `add_comment` to queue **one** assessment report on the triggering PR before
 queuing label changes. Lead with the verdict and a short rationale:
