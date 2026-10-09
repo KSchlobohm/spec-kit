@@ -343,8 +343,10 @@ prevents a required check, validation is blocked by the workflow environment:
 #### Failed
 
 If there are no environment blockers and a completed check found a submission defect:
-1. Add a comment on the issue listing each failed check with a clear explanation
-   of what's wrong and how to fix it
+1. Follow the shared comment guidance: explain the specific changes needed,
+   list each failed check, and use "Next step for the author: Please ..."
+   for corrections. Ask a maintainer to rerun validation after the issue is
+   updated; editing the issue alone does not start a run.
 2. Remove `validation-passed`
 3. Add the `validation-failed` label
 4. **Stop — do not proceed further**
@@ -535,6 +537,10 @@ Include:
 - Validation results (all checks passed)
 - `Closes #${{ github.event.issue.number }}`
 - `cc @<issue-author>` — mention the submitter
+
+Emit one issue outcome comment using the shared **PR requested** publication
+section. Keep validation evidence outside that section; the reporting job
+updates it with the actual draft PR link after confirmed publication.
 
 ## Important Rules
 
