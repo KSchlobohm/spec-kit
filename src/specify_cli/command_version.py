@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 
 import typer
-from rich.panel import Panel
-from rich.table import Table
 
 from . import _operation_version
-from ._console import console, show_banner
+from ._console import console
 from ._operation_version import (
     VersionResult,
     _feature_capabilities,
@@ -69,7 +67,7 @@ def version(
         help="Emit complete version information as JSON.",
     ),
 ) -> None:
-    """Display version and system information."""
+    """Display the CLI version; use --json for complete system information."""
     from . import get_speckit_version
 
     if json_output:
@@ -111,42 +109,11 @@ def version(
         return
 
     result = collect_version_result(
+        include_environment=False,
         cli_version_getter=get_speckit_version,
-        openssl_version_getter=_openssl_version,
         feature_capabilities_getter=_feature_capabilities,
     )
-    if result.runtime is None or result.system is None:
-        raise RuntimeError("Complete version information is required.")
-
-    show_banner()
-
-    info_table = Table(show_header=False, box=None, padding=(0, 2))
-    info_table.add_column("Key", style="cyan", justify="right")
-    info_table.add_column("Value", style="white")
-
-    info_table.add_row("CLI Version", result.cli_version)
-    info_table.add_row("", "")
-    info_table.add_row("Python", result.runtime.python)
-    info_table.add_row("Platform", result.system.platform)
-    info_table.add_row("Architecture", result.system.architecture)
-    info_table.add_row("OS Version", result.system.os_version)
-    # The OpenSSL runtime the interpreter actually loaded. HTTPS failure
-    # reports (#4433) hinge on which OpenSSL is in play, and on Windows it is
-    # not obvious from the outside, so surface it here. An interpreter built
-    # without the ssl extension skips the row rather than failing the command.
-    openssl_version = result.runtime.openssl
-    if openssl_version:
-        info_table.add_row("OpenSSL", openssl_version)
-
-    panel = Panel(
-        info_table,
-        title="[bold cyan]Specify CLI Information[/bold cyan]",
-        border_style="cyan",
-        padding=(1, 2),
-    )
-
-    console.print(panel)
-    console.print()
+    console.print(f"Spec Kit CLI: {result.cli_version}")
 
 
 def register(app: typer.Typer) -> None:

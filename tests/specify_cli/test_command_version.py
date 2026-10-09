@@ -31,6 +31,32 @@ EXPECTED_FEATURES = {
 class TestVersionCommand:
     """Test the `specify version` subcommand."""
 
+    def test_version_default_emits_only_cli_version(self):
+        with patch("specify_cli.get_speckit_version", return_value="1.2.3"):
+            result = runner.invoke(app, ["version"])
+
+        assert result.exit_code == 0
+        assert result.output == "Spec Kit CLI: 1.2.3\n"
+
+    def test_version_default_does_not_collect_environment(self):
+        with (
+            patch("specify_cli.get_speckit_version", return_value="1.2.3"),
+            patch(
+                "specify_cli.command_version.platform.python_version",
+                side_effect=AssertionError("Unexpected environment collection"),
+            ) as python_version,
+            patch(
+                "specify_cli.command_version._openssl_version",
+                side_effect=AssertionError("Unexpected environment collection"),
+            ) as openssl_version,
+        ):
+            result = runner.invoke(app, ["version"])
+
+        assert result.exit_code == 0
+        assert result.output == "Spec Kit CLI: 1.2.3\n"
+        python_version.assert_not_called()
+        openssl_version.assert_not_called()
+
     def test_version_features_text(self):
         """specify version --features prints local capability flags."""
         with patch("specify_cli.get_speckit_version", return_value="1.2.3"):
@@ -172,8 +198,8 @@ class TestVersionCommand:
         assert "\x1b" not in result.stderr
         assert "Traceback" not in result.stderr
 
-    def test_version_reports_openssl_runtime(self):
-        """specify version reports the OpenSSL runtime the interpreter loaded.
+    def test_version_json_reports_openssl_runtime(self):
+        """specify version --json reports the OpenSSL runtime actually loaded.
 
         Regression test for the triage gap in #4433: HTTPS failures on Windows
         are commonly blamed on a PATH-preceded OpenSSL DLL, but ``specify
@@ -183,7 +209,7 @@ class TestVersionCommand:
         ssl = pytest.importorskip("ssl")
 
         with patch("specify_cli.get_speckit_version", return_value="1.2.3"):
-            result = runner.invoke(app, ["version"])
+            result = runner.invoke(app, ["version", "--json"])
 
         assert result.exit_code == 0
 
