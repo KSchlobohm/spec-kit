@@ -104,7 +104,8 @@ This command stays offline. If a command behaves like an older Spec Kit version 
 specify version
 ```
 
-Displays the Spec Kit CLI version, Python version, platform, and architecture.
+Displays only the Spec Kit CLI version on one line. Use `--json` below for
+runtime and system information.
 
 To inspect local CLI capabilities without checking the network:
 
