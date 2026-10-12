@@ -695,64 +695,26 @@ def test_other_issue_forms_do_not_apply_automatic_intake_verdict():
 
 
 @pytest.mark.parametrize("kind", [item[0] for item in ARCHIVE_SUBMISSION_WORKFLOWS])
-def test_community_submission_checks_current_issue_state_before_type(kind):
-    """Guard intake instructions, not the agent's interpretation of an issue."""
-    source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
-    intake = source_text.split("## Submission intake\n", 1)[1].split(
-        "\n## Step 1", 1
-    )[0]
-    prose = " ".join(intake.split())
-    assert "Read the issue's current state, title, and body" in prose
-    assert intake.index("If the issue is closed") < intake.index("For an open issue")
-    assert "If the issue is closed, report that processing stopped because it is closed" in prose
-    assert "Do not reopen the issue" in prose
-    assert "stop without commenting" not in source_text
-
-
-@pytest.mark.parametrize("kind", [item[0] for item in ARCHIVE_SUBMISSION_WORKFLOWS])
-def test_community_submission_intake_uses_explicit_not_incidental_type_evidence(kind):
-    source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
-    intake = source_text.split("## Submission intake\n", 1)[1].split(
-        "\n## Step 1", 1
-    )[0]
-    prose = " ".join(intake.split())
-    for other_kind in ("extension", "preset", "bundle"):
-        assert f"`{other_kind.title()} ID`" in intake
-        assert f"`{other_kind.title()} Name`" in intake
-    for example in (
-        f"[{kind.title()}]", f"[{kind.title()} Submission]", f"{kind.title()} submission:",
-    ):
-        assert f"`{example}`" in intake
-    assert "Ignore case, extra whitespace, and an optional colon" in prose
-    assert "The applied label selects the workflow; it is not evidence of submission type" in prose
-    assert "Incidental component or dependency mentions are not type evidence" in prose
-    assert (
-        "Missing required fields in a matching submission are handled by "
-        "existing validation, not a reason to skip intake."
-    ) in prose
-    assert "For example, a `[Feature]` title and `Problem Statement`" in prose
-    assert "do not establish a catalog submission" in prose
-    assert "an explicit title/body type conflict" in prose
-    assert "Do not choose a type or assume intent" in prose
-
-
-@pytest.mark.parametrize("kind", [item[0] for item in ARCHIVE_SUBMISSION_WORKFLOWS])
-def test_community_submission_intake_stops_with_a_comment_not_catalog_side_effects(kind):
+def test_community_submission_title_mismatch_reports_stop(kind):
+    """Guard written requirements, not hosted agent behavior."""
     source_text, _, _, compiled = _agentic_workflow(f"add-community-{kind}")
-    intake = source_text.split("## Submission intake\n", 1)[1].split(
+    trigger = source_text.split("## Triggering Conditions\n", 1)[1].split(
         "\n## Step 1", 1
     )[0]
-    prose = " ".join(intake.split())
-    assert "For each intake stop, emit one `add_comment`" in prose
-    assert f"Name the `{kind}-submission` workflow" in prose
-    assert "state that catalog validation was not performed" in prose
-    assert "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" in intake
+    prose = " ".join(trigger.split())
+    assert f"verify that the issue title starts with `[{kind.title()}]:`" in prose
+    assert "If it does not, emit one `add_comment` on the issue" in prose
     assert (
-        "Stop without validation, label changes, catalog/docs edits, PR creation, "
-        "or routing to another workflow."
+        f"The {kind}-submission workflow stopped before validation because "
+        f"the issue title does not start with `[{kind.title()}]:`."
+    ) in prose
+    assert "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" in trigger
+    assert (
+        "stop without validation, label changes, catalog/docs edits, or PR creation."
     ) in prose
     assert "Do not substitute `noop` for this comment" in prose
-    assert "Matching intake needs no separate success comment" in prose
+    assert "Otherwise, continue to Step 1" in prose
+    assert "stop without commenting" not in source_text
     run_context = _workflow_step(
         compiled["jobs"]["activation"]["steps"], "Interpolate variables and render templates"
     )["env"]
@@ -762,44 +724,6 @@ def test_community_submission_intake_stops_with_a_comment_not_catalog_side_effec
         ("GH_AW_GITHUB_RUN_ID", "${{ github.run_id }}"),
     ):
         assert run_context[variable] == expression
-
-
-@pytest.mark.parametrize("kind", [item[0] for item in ARCHIVE_SUBMISSION_WORKFLOWS])
-def test_community_submission_comments_do_not_assign_human_work_or_predict_publication(kind):
-    source_text, _, _, _ = _agentic_workflow(f"add-community-{kind}")
-    prose = " ".join(source_text.split())
-    assert (
-        "Comments throughout this workflow report observed evidence and "
-        "completed or incomplete actions only."
-    ) in prose
-    assert (
-        "Do not infer intent, assign people work, prescribe next steps, or "
-        "predict acceptance or publication."
-    ) in prose
-    assert "Keep the existing publisher's confirmed PR-created notification" in prose
-    for removed_instruction in (
-        "asking a maintainer to investigate",
-        "how to fix it",
-        "ask the submitter to link",
-        "tell the submitter to add",
-        "recommend the submitter point",
-        "ask the submitter to list",
-        "report the problem for maintainer investigation",
-        "a specific correction",
-    ):
-        assert removed_instruction not in prose
-
-
-@pytest.mark.parametrize("kind", [item[0] for item in ARCHIVE_SUBMISSION_WORKFLOWS])
-def test_community_submission_keeps_existing_jobs_without_custom_outcome_reporting(kind):
-    _, compiled_text, source, compiled = _agentic_workflow(f"add-community-{kind}")
-    assert "imports" not in source
-    assert set(source.get("jobs", {})) == ({"conclusion"} if kind == "bundle" else set())
-    assert set(compiled["jobs"]) == {
-        "pre_activation", "activation", "agent", "detection", "safe_outputs", "conclusion",
-    }
-    assert "catalog-submission.md" not in compiled_text
-    assert "SUBMISSION_RUN_ATTEMPT" not in compiled_text
 
 
 @pytest.mark.parametrize("kind", [item[0] for item in COMMUNITY_SUBMISSION_WORKFLOWS])

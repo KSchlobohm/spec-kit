@@ -244,17 +244,9 @@ and [workflow steps](https://github.com/github/spec-kit/blob/main/.github/workfl
 validate submission metadata and propose catalog changes in draft PRs for
 maintainer review.
 
-For extension, preset, and bundle submissions, labels select the workflow; they
-do not establish submission type.
-The agent checks the issue's current state, then uses its title and type-specific
-issue-form fields without requiring exact title punctuation. Closed issues,
-non-catalog issues, wrong-type submissions, and unclear or conflicting type
-evidence receive a comment naming the submission workflow, citing the evidence,
-and linking the run. Processing stops without validation, label changes, catalog
-edits, or a PR. Open, matching submissions continue through existing validation
-and draft PR creation. Comments report observed results, not human assignments
-or predictions of acceptance or publication; the publisher reports confirmed
-PR creation.
+Extension, preset, and bundle submission titles require the `[Extension]:`,
+`[Preset]:`, and `[Bundle]:` prefixes respectively. A mismatch receives a comment
+and run link, then processing stops without validation or other changes.
 
 Catalog discovery does not audit or endorse community code; users must
 review third-party components before use.
