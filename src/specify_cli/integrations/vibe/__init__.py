@@ -6,6 +6,7 @@ Vibe uses ``.vibe/skills/speckit-<name>/SKILL.md`` layout (enforced since v2.0.0
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,33 @@ class VibeIntegration(SkillsIntegration):
         )
         return opts
 
+    def build_exec_args(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        output_json: bool = True,
+        integration_args: Sequence[str] | None = None,
+        integration_options: Mapping[str, Any] | None = None,
+        project_root: Path | None = None,
+    ) -> list[str] | None:
+        """Build CLI arguments for non-interactive ``vibe`` execution.
+
+        ``SkillsIntegration``'s default appends ``--model`` and
+        ``--output-format``, neither of which exists in the Vibe CLI, so a
+        dispatched step exits 2 at argument parsing whenever either flag ends
+        up appended (a configured ``model``, or ``output_json=True``). Vibe's
+        structured output is ``--output json``. ``model`` is deliberately
+        dropped: Vibe has no per-invocation model flag and selects its model
+        out of band via ``active_model`` in its config (or ``VIBE_ACTIVE_MODEL``).
+        """
+        self.validate_runtime_config(integration_args, integration_options)
+        args = [self._resolve_executable(), "-p", prompt]
+        self._apply_extra_args_env_var(args)
+        if output_json:
+            args.extend(["--output", "json"])
+        return args
+
     def _render_skill(self, template_name: str, frontmatter: dict[str, Any], body: str) -> str:
         """Render a processed command template as a Vibe skill."""
         skill_name = f"speckit-{template_name.replace('.', '-')}"
@@ -115,7 +143,13 @@ class VibeIntegration(SkillsIntegration):
             if dash_count == 1 and stripped.startswith(f"{key}:"):
                 return content
 
-        # Inject before the closing --- of frontmatter
+        # Inject before the closing --- of frontmatter. Preserve the
+        # existing EOL style, but default to "\n" (rather than "") when the
+        # closing delimiter is the last line of the file with no trailing
+        # newline -- otherwise the injected text glues onto the "---"
+        # (e.g. "user-invocable: true---"), destroying the delimiter so a
+        # later call's pre-scan/injection never finds a second "---" and
+        # silently drops that key entirely.
         out: list[str] = []
         dash_count = 0
         injected = False
@@ -129,7 +163,7 @@ class VibeIntegration(SkillsIntegration):
                     elif line.endswith("\n"):
                         eol = "\n"
                     else:
-                        eol = ""
+                        eol = "\n"
                     out.append(f"{key}: {value}{eol}")
                     injected = True
             out.append(line)
