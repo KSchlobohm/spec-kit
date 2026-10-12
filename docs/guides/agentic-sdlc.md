@@ -159,8 +159,12 @@ Every completed assessment posts a new standalone comment, including matching
 reruns. Suggested updates are description-only, not code-change alternatives.
 This MVP uses separate remove/add operations that can partially fail and do not
 make concurrent manual label edits safe. Comment delivery is also separate.
-It reads repository and fork changes
-without executing contributor code. A mislabeled issue or closed PR receives
+It uses `pull_request: labeled` and reads changes without executing contributor
+code. A same-repository PR can validate this trigger, but does not establish
+fork-origin PR support: `pull_request` generally withholds repository secrets
+and write permissions for fork-origin PRs, blocking the Copilot engine and
+comment/label outputs. The compiled workflow skips fork-origin PRs and non-top
+PRs in a stack. A mislabeled issue or eligible closed PR receives
 an explanatory comment, not a verdict. Reassessment is manual: remove and re-add
 the trigger label. This checks description alignment, not author intent or
 general code quality, and does not replace human review.

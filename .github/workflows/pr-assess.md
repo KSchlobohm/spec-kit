@@ -4,7 +4,7 @@ description: "Compare a PR description with its code changes and report material
 on:
   issues:
     types: [labeled]
-  pull_request_target:
+  pull_request:
     types: [labeled]
   skip-bots: [github-actions, copilot, dependabot]
 
@@ -70,7 +70,7 @@ An aligned description does not mean the code is correct, secure, or merge-ready
   "**PR description assessment: not assessed.** `pr-assess` assesses pull request
   descriptions, not issues. Apply `pr-assess` to the relevant open PR."
   **Stop after queuing this comment. Do not add or remove labels.**
-- **PR event (`pull_request_target`).** Read the triggering PR with
+- **PR event (`pull_request`).** Read the triggering PR with
   `pull_request_read` (`get`). If it is closed or merged, use `add_comment` on
   that PR with:
   "**PR description assessment: not assessed.** This workflow assesses open PRs

@@ -1585,11 +1585,11 @@ def test_bug_workflow_upgrade_preserves_runtime_and_negative_guards(name):
     } == expected_actions
 
 
-def test_pr_assess_triggers_cover_issues_and_fork_prs_without_silent_state_filters():
+def test_pr_assess_triggers_cover_issues_and_prs_without_silent_state_filters():
     _, _, source, compiled = _agentic_workflow("pr-assess")
     events = {
         "issues": {"types": ["labeled"]},
-        "pull_request_target": {"types": ["labeled"]},
+        "pull_request": {"types": ["labeled"]},
     }
     assert (source.get("on") or source[True]) == {
         **events,
@@ -1598,10 +1598,19 @@ def test_pr_assess_triggers_cover_issues_and_fork_prs_without_silent_state_filte
     assert (compiled.get("on") or compiled[True]) == events
     assert source["if"] == "github.event.label.name == 'pr-assess'"
     pre_activation = compiled["jobs"]["pre_activation"]
-    assert pre_activation["if"] == source["if"]
-    assert compiled["jobs"]["activation"]["if"] == (
-        "needs.pre_activation.outputs.activated == 'true' && "
-        "(github.event.label.name == 'pr-assess')"
+    protected_condition = (
+        "((github.event.label.name == 'pr-assess') && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.id == github.repository_id)) && "
+        "((github.event_name != 'pull_request' && "
+        "github.event_name != 'pull_request_review') || "
+        "github.event.pull_request.stack == null || "
+        "github.event.pull_request.stack.position == "
+        "github.event.pull_request.stack.size)"
+    )
+    assert " ".join(pre_activation["if"].split()) == protected_condition
+    assert " ".join(compiled["jobs"]["activation"]["if"].split()) == (
+        f"needs.pre_activation.outputs.activated == 'true' && ({protected_condition})"
     )
     assert pre_activation["outputs"]["activated"] == (
         "${{ steps.check_membership.outputs.is_team_member == 'true' && "
@@ -1626,11 +1635,11 @@ def test_pr_assess_activation_and_concurrency_for_expected_and_prevented_events(
     _, _, source, compiled = _agentic_workflow("pr-assess")
     pre_activation = compiled["jobs"]["pre_activation"]
     cases = []
-    for event_name in ("issues", "pull_request_target"):
+    for event_name in ("issues", "pull_request"):
         for label in ("pr-assess", "bug-assess", "pr-description-aligned"):
             for state in ("open", "closed"):
                 for fork in (
-                    (False, True) if event_name == "pull_request_target" else (False,)
+                    (False, True) if event_name == "pull_request" else (False,)
                 ):
                     cases.append(
                         {
@@ -1645,12 +1654,24 @@ def test_pr_assess_activation_and_concurrency_for_expected_and_prevented_events(
     for member, bot_allowed in ((False, True), (True, False)):
         cases.append(
             {
-                "event_name": "pull_request_target",
+                "event_name": "pull_request",
                 "label": "pr-assess",
                 "state": "open",
-                "fork": True,
+                "fork": False,
                 "member": member,
                 "bot_allowed": bot_allowed,
+            }
+        )
+    for position in (1, 2):
+        cases.append(
+            {
+                "event_name": "pull_request",
+                "label": "pr-assess",
+                "state": "open",
+                "fork": False,
+                "member": True,
+                "bot_allowed": True,
+                "stack": {"position": position, "size": 2},
             }
         )
     harness = r"""
@@ -1658,11 +1679,13 @@ const fs = require('node:fs');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const results = input.cases.map(test => {
   const item = {number: 37, state: test.state};
-  if (test.event_name === 'pull_request_target') {
+  if (test.event_name === 'pull_request') {
     item.base = {repo: {id: 1, full_name: 'test/repo'}};
     item.head = {repo: {id: test.fork ? 2 : 1, full_name: test.fork ? 'fork/repo' : 'test/repo'}};
+    item.stack = test.stack ?? null;
   }
   const github = {
+    repository_id: 1,
     event_name: test.event_name,
     event: {action: 'labeled', label: {name: test.label}, issue: {}, pull_request: {},
       [test.event_name === 'issues' ? 'issue' : 'pull_request']: item}
@@ -1701,10 +1724,16 @@ console.log(JSON.stringify(results));
     assert result.returncode == 0, result.stderr
     for case, actual in zip(cases, json.loads(result.stdout), strict=True):
         requested = case["label"] == "pr-assess"
+        stack = case.get("stack")
+        eligible = not case["fork"] and (
+            stack is None or stack["position"] == stack["size"]
+        )
         assert actual == {
             "source": requested,
-            "pre": requested,
-            "activation": requested and case["member"] and case["bot_allowed"],
+            "pre": requested and eligible,
+            "activation": (
+                requested and eligible and case["member"] and case["bot_allowed"]
+            ),
             "group": f"pr-assess-37-{case['label']}",
         }, case
     assert (
@@ -1720,7 +1749,7 @@ console.log(JSON.stringify(results));
     )
 
 
-def test_pr_assess_uses_trusted_instructions_without_executing_pr_code():
+def test_pr_assess_uses_read_only_tools_without_executing_pr_code():
     _, compiled_text, source, compiled = _agentic_workflow("pr-assess")
     metadata = _gh_aw_metadata(compiled_text)
     assert metadata["compiler_version"] == "v0.89.21"
@@ -1756,6 +1785,8 @@ def test_pr_assess_uses_trusted_instructions_without_executing_pr_code():
     manifest = json.loads(
         compiled_text.splitlines()[1].removeprefix("# gh-aw-manifest: ")
     )
+    assert manifest["has_pull_request"] is True
+    assert "has_pull_request_target" not in manifest
     assert next(
         server["tools"]
         for server in manifest["mcp_servers"]
@@ -1866,17 +1897,28 @@ def test_pr_assess_reruns_require_a_new_standalone_comment_even_without_label_ch
 
 
 def test_pr_assess_misuse_branches_require_a_comment_without_verdict_labels():
-    source_text, _, _, _ = _agentic_workflow("pr-assess")
+    source_text, _, _, compiled = _agentic_workflow("pr-assess")
+    input_env = _workflow_step(
+        compiled["jobs"]["activation"]["steps"],
+        "Interpolate variables and render templates",
+    )["env"]
+    assert "${{ github.event.pull_request.number || github.event.issue.number }}" in (
+        input_env.values()
+    )
+    assert input_env["GH_AW_GITHUB_EVENT_NAME"] == "${{ github.event_name }}"
+    assert "#${{ github.event.pull_request.number || github.event.issue.number }}" in (
+        source_text
+    )
     routing = " ".join(
         source_text.split("## Step 1", 1)[1].split("## Step 2", 1)[0].split()
     )
     issue = routing.split("**Issue event (`issues`).**", 1)[1].split(
-        "**PR event (`pull_request_target`).**", 1
+        "**PR event (`pull_request`).**", 1
     )[0]
     assert "Do not attempt to read a PR with this issue number." in issue
     assert "Use `add_comment` on the triggering issue" in issue
     assert "Apply `pr-assess` to the relevant open PR." in issue
-    closed = routing.split("**PR event (`pull_request_target`).**", 1)[1].split(
+    closed = routing.split("**PR event (`pull_request`).**", 1)[1].split(
         "**PR metadata cannot be read.**", 1
     )[0]
     assert "If it is closed or merged, use `add_comment`" in closed
