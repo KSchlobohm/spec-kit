@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-10-06T00:00:00Z",
+  "updated_at": "2026-10-12T00:00:00Z",
   "catalog_url": "https://raw.githubusercontent.com/github/spec-kit/main/bundles/catalog.community.json",
   "bundles": {
     "agentstandards": {
@@ -29,12 +29,13 @@
     "sicario-spec": {
       "name": "SicarioSpec Security & Governance Bundle",
       "id": "sicario-spec",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "role": "security-engineer",
       "description": "Secure-by-default governance bundle for GitHub Spec Kit. Enforces data classification, threat modeling, and code-owned verification gates.",
       "author": "SicarioSpec Contributors",
       "license": "MIT",
-      "download_url": "https://github.com/dfirs1car1o/sicario-spec/releases/download/v0.5.1/sicario-spec-0.5.1.zip",
+      "download_url": "https://github.com/dfirs1car1o/sicario-spec/releases/download/v0.6.0/sicario-spec-0.6.0.zip",
+      "sha256": "2f811878501f1565bd3c1fe06e092269f507ae6eb23b10699fc15a1435d68654",
       "repository": "https://github.com/dfirs1car1o/sicario-spec",
       "requires": {
         "speckit_version": ">=0.9.0"
