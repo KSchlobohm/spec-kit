@@ -36,6 +36,7 @@ checkout: false
 
 safe-outputs:
   noop:
+    max: 1
     report-as-issue: false
   add-comment:
     target: triggering
@@ -44,6 +45,7 @@ safe-outputs:
     target: triggering
     allowed: [pr-description-aligned, pr-description-needs-update, pr-description-inconclusive]
     max: 1
+    max-labels: 1
     issue-intent: false
   remove-labels:
     target: triggering

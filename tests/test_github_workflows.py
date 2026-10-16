@@ -1631,7 +1631,7 @@ def test_pr_assess_triggers_cover_issues_and_prs_without_silent_state_filters():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
-def test_pr_assess_activation_and_concurrency_for_expected_and_prevented_events():
+def test_pr_assess_activation_concurrency_and_checkout_for_expected_and_prevented_events():
     _, _, source, compiled = _agentic_workflow("pr-assess")
     pre_activation = compiled["jobs"]["pre_activation"]
     cases = []
@@ -1680,12 +1680,13 @@ const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const results = input.cases.map(test => {
   const item = {number: 37, state: test.state};
   if (test.event_name === 'pull_request') {
-    item.base = {repo: {id: 1, full_name: 'test/repo'}};
-    item.head = {repo: {id: test.fork ? 2 : 1, full_name: test.fork ? 'fork/repo' : 'test/repo'}};
+    item.base = {sha: 'base-sha', repo: {id: 1, full_name: 'test/repo'}};
+    item.head = {sha: 'head-sha', repo: {id: test.fork ? 2 : 1, full_name: test.fork ? 'fork/repo' : 'test/repo'}};
     item.stack = test.stack ?? null;
   }
   const github = {
     repository_id: 1,
+    sha: 'event-sha',
     event_name: test.event_name,
     event: {action: 'labeled', label: {name: test.label}, issue: {}, pull_request: {},
       [test.event_name === 'issues' ? 'issue' : 'pull_request']: item}
@@ -1701,7 +1702,8 @@ const results = input.cases.map(test => {
   const needs = {pre_activation: {outputs: {activated: String(activated)}}};
   const group = input.group.replace(/\$\{\{(.*?)\}\}/g, (_, expression) => evaluate(expression));
   return {source: evaluate(input.source_condition), pre,
-    activation: evaluate(input.activation_condition, needs), group};
+    activation: evaluate(input.activation_condition, needs), group,
+    checkout_ref: evaluate(input.checkout_ref)};
 });
 console.log(JSON.stringify(results));
 """
@@ -1715,6 +1717,10 @@ console.log(JSON.stringify(results));
                 "activated": pre_activation["outputs"]["activated"][3:-2].strip(),
                 "activation_condition": compiled["jobs"]["activation"]["if"],
                 "group": compiled["concurrency"]["group"],
+                "checkout_ref": _workflow_step(
+                    compiled["jobs"]["activation"]["steps"],
+                    "Checkout .github and .agents folders",
+                )["with"]["ref"][3:-2].strip(),
             }
         ),
         capture_output=True,
@@ -1735,6 +1741,9 @@ console.log(JSON.stringify(results));
                 requested and eligible and case["member"] and case["bot_allowed"]
             ),
             "group": f"pr-assess-37-{case['label']}",
+            "checkout_ref": (
+                "base-sha" if case["event_name"] == "pull_request" else "event-sha"
+            ),
         }, case
     assert (
         compiled["concurrency"]
@@ -1752,9 +1761,9 @@ console.log(JSON.stringify(results));
 def test_pr_assess_uses_read_only_tools_without_executing_pr_code():
     _, compiled_text, source, compiled = _agentic_workflow("pr-assess")
     metadata = _gh_aw_metadata(compiled_text)
-    assert metadata["compiler_version"] == "v0.89.21"
+    assert metadata["compiler_version"] == "v0.92.0"
     assert metadata["strict"] is True
-    assert metadata["engine_versions"] == {"copilot": "1.0.87"}
+    assert metadata["engine_versions"] == {"copilot": "1.0.96"}
     assert source["checkout"] is False
     assert source["tools"] == {
         "bash": False,
@@ -1780,7 +1789,6 @@ def test_pr_assess_uses_read_only_tools_without_executing_pr_code():
         compiled["jobs"]["activation"]["steps"], "Checkout .github and .agents folders"
     )
     assert checkout["with"]["persist-credentials"] is False
-    assert "ref" not in checkout["with"]
     assert "{{#runtime-import .github/workflows/pr-assess.md}}" in compiled_text
     manifest = json.loads(
         compiled_text.splitlines()[1].removeprefix("# gh-aw-manifest: ")
@@ -1795,7 +1803,7 @@ def test_pr_assess_uses_read_only_tools_without_executing_pr_code():
     refs = {match.group("ref") for match in USES_RE.finditer(compiled_text)}
     assert refs and all(PINNED_SHA_RE.search(ref) for ref in refs)
     assert {ref for ref in refs if ref.startswith("github/gh-aw-actions/")} == {
-        "github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60"
+        "github/gh-aw-actions/setup@458b269006dcf88e3b5496b6fbecabe4b9a0f954"
     }
 
 
@@ -1824,6 +1832,9 @@ def test_pr_assess_outputs_are_bounded_to_the_triggering_item():
         assert set(source_output["allowed"]) == PR_ASSESS_LABELS
         assert not {"target_repo", "allowed_repos"} & outputs[name].keys()
     assert outputs["add_labels"]["issue_intent"] is False
+    assert outputs["add_labels"].get("max_labels") == 1
+    assert source["safe-outputs"]["add-labels"]["max-labels"] == 1
+    assert outputs["noop"]["max"] == 1
     agent_config = json.loads(
         _workflow_step(
             compiled["jobs"]["agent"]["steps"], "Generate Safe Outputs Config"
@@ -1848,7 +1859,7 @@ def test_pr_assess_outputs_are_bounded_to_the_triggering_item():
         "issues": "write",
         "pull-requests": "write",
     }
-    assert source["safe-outputs"]["noop"] == {"report-as-issue": False}
+    assert source["safe-outputs"]["noop"] == {"max": 1, "report-as-issue": False}
 
 
 def test_pr_assess_cleans_up_stale_outcomes_before_adding_the_selected_label():
