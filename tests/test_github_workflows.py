@@ -1496,6 +1496,47 @@ def test_bug_workflows_use_updated_runtime(name):
     assert metadata["strict"] is True
 
 
+@pytest.mark.parametrize("name", ["bug-assess", "bug-fix", "bug-test"])
+def test_bug_workflows_gate_agent_on_daily_credit_budget(name):
+    _, _, _, compiled = _agentic_workflow(name)
+    activation = compiled["jobs"]["activation"]
+    assert any(
+        step.get("id") == "daily-ai-credits-workflow-guardrail"
+        for step in activation["steps"]
+    )
+    assert activation["outputs"]["daily_ai_credits_exceeded"] == (
+        "${{ steps.daily-ai-credits-workflow-guardrail.outputs."
+        "daily_ai_credits_exceeded == 'true' }}"
+    )
+    agent = compiled["jobs"]["agent"]
+    assert "activation" in agent["needs"]
+    assert agent["if"] == "needs.activation.outputs.daily_ai_credits_exceeded != 'true'"
+
+
+@pytest.mark.parametrize("name", ["bug-assess", "bug-fix", "bug-test"])
+def test_bug_workflows_forward_daily_credit_failure_details(name):
+    _, _, _, compiled = _agentic_workflow(name)
+    activation = compiled["jobs"]["activation"]
+    conclusion = compiled["jobs"]["conclusion"]
+    assert "activation" in conclusion["needs"]
+    assert "always()" in conclusion["if"]
+    for status in ("structural_error", "transient_error"):
+        assert (
+            f"needs.activation.outputs.daily_ai_credits_guardrail_status == '{status}'"
+        ) in conclusion["if"]
+    failure_handler = _workflow_step(conclusion["steps"], "Handle agent failure")
+    assert failure_handler["if"] == "always()"
+    for suffix in ("guardrail_status", "guardrail_error", "total"):
+        output = f"daily_ai_credits_{suffix}"
+        assert activation["outputs"][output] == (
+            "${{ steps.daily-ai-credits-workflow-guardrail.outputs."
+            + output + " || '' }}"
+        )
+        assert failure_handler["env"][f"GH_AW_{output.upper()}"] == (
+            "${{ needs.activation.outputs." + output + " }}"
+        )
+
+
 @pytest.mark.parametrize("name", ["bug-fix", "bug-test"])
 def test_bug_workflow_upgrade_preserves_runtime_and_negative_guards(name):
     _, compiled_text, source, compiled = _agentic_workflow(name)
