@@ -1487,13 +1487,18 @@ def test_bug_test_requires_original_exit_code_before_log_filtering():
     ) in execution
 
 
+@pytest.mark.parametrize("name", ["bug-assess", "bug-fix", "bug-test"])
+def test_bug_workflows_use_updated_runtime(name):
+    _, compiled_text, _, _ = _agentic_workflow(name)
+    metadata = _gh_aw_metadata(compiled_text)
+    assert metadata["compiler_version"] == "v0.89.21"
+    assert metadata["engine_versions"] == {"copilot": "1.0.87"}
+    assert metadata["strict"] is True
+
+
 @pytest.mark.parametrize("name", ["bug-fix", "bug-test"])
 def test_bug_workflow_upgrade_preserves_runtime_and_negative_guards(name):
     _, compiled_text, source, compiled = _agentic_workflow(name)
-    metadata = _gh_aw_metadata(compiled_text)
-    assert metadata["compiler_version"] == "v0.88.7"
-    assert metadata["engine_versions"] == {"copilot": "1.0.80"}
-    assert metadata["strict"] is True
     assert (source.get("on") or source[True]) == {
         "issues": {"types": ["labeled"], "names": [name]},
         "skip-bots": ["github-actions", "copilot", "dependabot"],
@@ -1574,11 +1579,11 @@ def test_bug_workflow_upgrade_preserves_runtime_and_negative_guards(name):
     assert refs
     assert all(PINNED_SHA_RE.search(ref) for ref in refs)
     expected_actions = {
-        "github/gh-aw-actions/setup@5e508589e03a7757a7e05b26e834292f5445bfb6"
+        "github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60"
     }
     if name == "bug-test":
         expected_actions.add(
-            "github/gh-aw-actions/setup-cli@5e508589e03a7757a7e05b26e834292f5445bfb6"
+            "github/gh-aw-actions/setup-cli@924af5fdc64061cfbf66fb584c8b07e2ac230c60"
         )
     assert {
         ref for ref in refs if ref.startswith("github/gh-aw-actions/")
