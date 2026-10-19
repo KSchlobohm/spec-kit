@@ -284,12 +284,22 @@ uv pip install -e ".[test]"
 
 #### CI test matrix
 
-The [Test & Lint Python workflow](.github/workflows/test.yml) runs the full test
-suite with `uv run pytest -n 2` on `ubuntu-latest`, `windows-latest`, and
+The [Test & Lint Python workflow](.github/workflows/test.yml) temporarily runs
+half 1 of a two-part experiment on `ubuntu-latest`, `windows-latest`, and
 `macos-latest`, each with Python 3.13 and 3.14 (six test jobs). Each job installs
 dependencies with `uv sync --extra test` and uses two pytest-xdist worker
-processes within that job. This does not add Actions jobs or reduce test
-coverage. A separate Ubuntu job runs Ruff with Python 3.14.
+processes within that job. The fixed file lists in `.github/test-halves.json`
+partition the full suite without overlap; each experiment runs only its selected
+half using `.github/scripts/run_test_half.py --half 1` (or `--half 2` for the
+complementary experiment). Files stay intact, balanced by collected test count,
+not historical runtime. This is measurement-only, not a merge candidate. Run half
+1 first and wait for its measurement before publishing half 2.
+A separate Ubuntu job runs Ruff with Python 3.14.
+
+The test step logs every selected file, and pytest reports pass/skip counts,
+skip reasons, and execution duration. Each matrix job uploads `test-results.xml`
+with per-case outcomes and durations. Platform-dependent skips remain unchanged;
+do not interpret those as missing partition members.
 
 When comparing CI timings, report the `Run tests` step duration separately from
 the total job duration, which also includes setup and dependency installation.
