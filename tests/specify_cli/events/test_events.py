@@ -21,6 +21,7 @@ from specify_cli.events import (
     validate_events,
     resolve_and_run_event_command,
 )
+from specify_cli.integrations import get_integration
 from specify_cli.integrations.manifest import IntegrationManifest
 from specify_cli.integrations.claude import ClaudeIntegration
 from specify_cli.integrations.cursor_agent import CursorAgentIntegration
@@ -362,6 +363,87 @@ class TestValidateEvents:
             }
         }
         validate_events(data)  # no raise
+
+
+@pytest.mark.parametrize(
+    (
+        "integration_key",
+        "event_name",
+        "handler_artifact",
+        "removal_artifact",
+    ),
+    [
+        (
+            "claude",
+            "pre_tool_use",
+            ".claude/settings.json",
+            ".claude/settings.json",
+        ),
+        (
+            "cursor-agent",
+            "session_start",
+            ".cursor/hooks.json",
+            ".cursor/hooks.json",
+        ),
+        (
+            "copilot",
+            "session_start",
+            ".github/hooks/speckit.json",
+            ".github/hooks/speckit.json",
+        ),
+        ("codex", "pre_tool_use", ".codex/config.toml", ".codex/config.toml"),
+        ("vibe", "pre_tool_use", ".vibe/hooks.toml", ".vibe/hooks.toml"),
+        (
+            "devin",
+            "pre_tool_use",
+            ".devin/hooks.v1.json",
+            ".devin/hooks.v1.json",
+        ),
+        (
+            "opencode",
+            "session_start",
+            ".opencode/plugin/speckit-events.ts",
+            "opencode.json",
+        ),
+    ],
+)
+def test_native_event_formats_install_update_and_remove_owned_handlers(
+    tmp_path,
+    integration_key,
+    event_name,
+    handler_artifact,
+    removal_artifact,
+):
+    """Every native format replaces stale handlers and removes owned output."""
+    integration = type(get_integration(integration_key))()
+    manifest = IntegrationManifest(integration_key, tmp_path)
+    handler_path = tmp_path / handler_artifact
+    removal_path = tmp_path / removal_artifact
+
+    install_integration_events(
+        integration,
+        tmp_path,
+        manifest,
+        {event_name: [{"command": "speckit.characterize.first"}]},
+    )
+    assert "speckit.characterize.first" in handler_path.read_text(encoding="utf-8")
+    assert removal_path.is_file()
+
+    install_integration_events(
+        integration,
+        tmp_path,
+        manifest,
+        {event_name: [{"command": "speckit.characterize.second"}]},
+    )
+    updated = handler_path.read_text(encoding="utf-8")
+    assert "speckit.characterize.first" not in updated
+    assert "speckit.characterize.second" in updated
+
+    remove_integration_events(integration, tmp_path, manifest)
+    assert not removal_path.exists()
+    assert not handler_path.exists()
+    manifest.uninstall(force=True)
+    assert not handler_path.exists()
 
 
 # -- Claude settings JSON merging -------------------------------------------
@@ -1087,6 +1169,98 @@ class TestTomlNoOpMerge:
         remove_integration_events(integration, tmp_path, manifest)
 
         assert not config_path.exists()
+
+
+class TestJsonNoOpRemoval:
+    """An empty resolved event map must leave a JSON native config that holds
+    no Specify-owned entries untouched, as #4563 did for Codex's TOML.
+
+    Every ``specify extension add/remove/enable/disable/update`` refreshes
+    events. With no events configured, the refresh takes
+    ``install_integration_events``'s empty-map branch into the JSON removal
+    helpers, which rewrote the user's file even when there was nothing to
+    strip: re-indenting it, dropping empty lists, or deleting ``{}`` outright.
+    """
+
+    # Hand-formatted user configs with a user hook and an empty list that a
+    # rewrite would drop, and no Specify-owned entries.
+    USER_CONFIGS = {
+        "claude": (
+            ".claude/settings.json",
+            b'{\n\t"hooks": {"Notification": [], "Stop": [{"hooks": '
+            b'[{"type": "command", "command": "./user-hook.sh"}]}]}\n}',
+        ),
+        "copilot": (
+            ".github/hooks/speckit.json",
+            b'{"version": 1, "hooks": {"agentStop": [], "sessionStart": '
+            b'[{"type": "command", "bash": "./user-hook.sh"}]}}',
+        ),
+        "cursor-agent": (
+            ".cursor/hooks.json",
+            b'{"version": 1, "hooks": {"afterFileEdit": [], "stop": '
+            b'[{"command": "./user-hook.sh"}]}}',
+        ),
+        "devin": (
+            ".devin/hooks.v1.json",
+            b'{"Stop": [], "SessionStart": [{"matcher": "", "hooks": '
+            b'[{"type": "command", "command": "./user-hook.sh"}]}]}',
+        ),
+        "opencode": (
+            "opencode.json",
+            b'{"instructions": [], "plugin": ["./user-hook.ts"]}',
+        ),
+    }
+
+    def _write_user_config(self, tmp_path, key, content=None):
+        rel, original = self.USER_CONFIGS[key]
+        config_path = tmp_path / rel
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_bytes(original if content is None else content)
+        return config_path
+
+    @pytest.mark.parametrize("key", sorted(USER_CONFIGS))
+    def test_no_events_leaves_user_config_untouched(self, tmp_path, key):
+        config_path = self._write_user_config(tmp_path, key)
+        original = config_path.read_bytes()
+        mtime_before = config_path.stat().st_mtime_ns
+
+        install_integration_events(
+            get_integration(key), tmp_path, _claude_manifest(tmp_path), {}
+        )
+
+        assert config_path.read_bytes() == original
+        assert config_path.stat().st_mtime_ns == mtime_before
+
+    @pytest.mark.parametrize("key", sorted(USER_CONFIGS))
+    def test_no_events_keeps_empty_user_config(self, tmp_path, key):
+        config_path = self._write_user_config(tmp_path, key, content=b"{}")
+
+        install_integration_events(
+            get_integration(key), tmp_path, _claude_manifest(tmp_path), {}
+        )
+
+        assert config_path.read_bytes() == b"{}"
+
+    @pytest.mark.parametrize("key", sorted(USER_CONFIGS))
+    def test_no_events_still_strips_owned_entries(self, tmp_path, key):
+        """The guard must not defeat cleanup when owned entries exist."""
+        integration = get_integration(key)
+        config_path = self._write_user_config(tmp_path, key)
+        install_integration_events(
+            integration, tmp_path, _claude_manifest(tmp_path),
+            {"session_start": [{"command": "speckit.boot"}]},
+        )
+        merged = config_path.read_text(encoding="utf-8")
+        assert "__speckit_event__" in merged or "speckit-events.ts" in merged
+
+        install_integration_events(
+            integration, tmp_path, _claude_manifest(tmp_path), {}
+        )
+
+        cleaned = config_path.read_text(encoding="utf-8")
+        assert "__speckit_event__" not in cleaned
+        assert "speckit-events.ts" not in cleaned
+        assert "./user-hook." in cleaned
 
 
 # -- Opencode TS Plugin merging ---------------------------------------------
