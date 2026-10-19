@@ -282,6 +282,20 @@ uv pip install -e ".[test]"
 > `specify_cli` to this checkout's `src/`. This matches the gotcha documented in
 > `AGENTS.md` (Common Pitfalls).
 
+#### CI test matrix
+
+The [Test & Lint Python workflow](.github/workflows/test.yml) runs the full test
+suite with `uv run pytest` on `ubuntu-latest`, `windows-latest`, and
+`macos-latest`, each with Python 3.13 and 3.14 (six test jobs). Each job installs
+dependencies with `uv sync --extra test` and runs tests serially. A separate
+Ubuntu job runs Ruff with Python 3.14.
+
+When comparing CI timings, report the `Run tests` step duration separately from
+the total job duration, which also includes setup and dependency installation.
+Keep time waiting for workflow approval or a runner separate from execution
+time. Compare matching OS and Python versions, and identify the commit, run,
+and attempt so results can be traced to the same execution.
+
 #### Security checks
 
 ```bash
