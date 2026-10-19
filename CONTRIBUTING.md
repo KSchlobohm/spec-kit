@@ -285,10 +285,11 @@ uv pip install -e ".[test]"
 #### CI test matrix
 
 The [Test & Lint Python workflow](.github/workflows/test.yml) runs the full test
-suite with `uv run pytest` on `ubuntu-latest`, `windows-latest`, and
+suite with `uv run pytest -n 2` on `ubuntu-latest`, `windows-latest`, and
 `macos-latest`, each with Python 3.13 and 3.14 (six test jobs). Each job installs
-dependencies with `uv sync --extra test` and runs tests serially. A separate
-Ubuntu job runs Ruff with Python 3.14.
+dependencies with `uv sync --extra test` and uses two pytest-xdist worker
+processes within that job. This does not add Actions jobs or reduce test
+coverage. A separate Ubuntu job runs Ruff with Python 3.14.
 
 When comparing CI timings, report the `Run tests` step duration separately from
 the total job duration, which also includes setup and dependency installation.
