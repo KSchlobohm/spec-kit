@@ -1,4 +1,4 @@
-"""Guard the fixed suite halves and two-worker CI experiment."""
+"""Guard the fixed suite halves and targeted two-worker CI diagnostic."""
 
 import importlib.util
 import json
@@ -21,37 +21,45 @@ def _workflow():
     )
 
 
-def test_pytest_keeps_all_six_os_python_combinations():
+def test_pytest_diagnostic_runs_only_windows_python313():
     workflow = _workflow()
     job = workflow["jobs"]["pytest"]
 
     assert job["runs-on"] == "${{ matrix.os }}"
     assert job["strategy"] == {
         "matrix": {
-            "os": ["ubuntu-latest", "windows-latest", "macos-latest"],
-            "python-version": ["3.13", "3.14"],
+            "os": ["windows-latest"],
+            "python-version": ["3.13"],
         }
     }
+    assert set(workflow["jobs"]) == {"ruff", "pytest"}
+    assert workflow["permissions"] == {"contents": "read"}
     assert "if" not in job
     assert "continue-on-error" not in job
 
 
-def test_pytest_runs_full_suite_with_exactly_two_workers_and_no_failure_fallback():
-    """The full suite is now accounted for across the two fixed halves."""
+def test_pytest_diagnostic_reports_all_phases_with_two_workers_and_no_failure_fallback():
     job = _workflow()["jobs"]["pytest"]
     steps = {step["name"]: step for step in job["steps"]}
 
     assert steps["Install dependencies"]["run"] == "uv sync --extra test"
     assert steps["Run tests"] == {
         "name": "Run tests",
-        "run": "uv run python .github/scripts/run_test_half.py --half 2",
+        "run": (
+            "uv run python -m pytest -n 2 -ra --durations=0 --durations-min=0 "
+            "--junitxml=test-results.xml "
+            "tests/specify_cli/integrations/test_installed_adapters.py"
+        ),
     }
     assert steps["Upload test results"] == {
         "name": "Upload test results",
         "if": "${{ always() }}",
         "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
         "with": {
-            "name": "test-half-2-${{ matrix.os }}-python-${{ matrix.python-version }}",
+            "name": (
+                "installed-adapter-durations-${{ matrix.os }}"
+                "-python-${{ matrix.python-version }}"
+            ),
             "path": "test-results.xml",
             "if-no-files-found": "error",
         },

@@ -285,21 +285,23 @@ uv pip install -e ".[test]"
 #### CI test matrix
 
 The [Test & Lint Python workflow](.github/workflows/test.yml) temporarily runs
-half 2 of a two-part experiment on `ubuntu-latest`, `windows-latest`, and
-`macos-latest`, each with Python 3.13 and 3.14 (six test jobs). Each job installs
-dependencies with `uv sync --extra test` and uses two pytest-xdist worker
-processes within that job. The fixed file lists in `.github/test-halves.json`
-partition the full suite without overlap; each experiment runs only its selected
-half using `.github/scripts/run_test_half.py --half 2` (or `--half 1` for the
-complementary experiment). Files stay intact, balanced by collected test count,
-not historical runtime. This is measurement-only, not a merge candidate. Both
-halves may be published and measured concurrently; record any execution overlap.
+only `tests/specify_cli/integrations/test_installed_adapters.py` on
+`windows-latest` with Python 3.13 and two pytest-xdist workers. This diagnostic
+uses pytest's built-in `--durations=0 --durations-min=0` reporting to show all
+setup, call, and teardown timings. It does not run either half-suite or add a
+profiler, dependency, or permission.
 A separate Ubuntu job runs Ruff with Python 3.14.
 
-The test step logs every selected file, and pytest reports pass/skip counts,
-skip reasons, and execution duration. Each matrix job uploads `test-results.xml`
-with per-case outcomes and durations. Platform-dependent skips remain unchanged;
-do not interpret those as missing partition members.
+The original six-platform half-2 measurement remains recorded at commit
+`1bc05c0e2d69a7ca2caa300e751b11a3d5c2f361` and
+[run 39291884363](https://github.com/KSchlobohm/spec-kit/actions/runs/39291884363).
+The fixed partition manifest and selector remain unchanged. This follow-up is
+measurement-only, not a merge candidate or an optimization.
+
+The test step reports pass/skip counts, skip reasons, and phase durations. The
+Windows job uploads `test-results.xml` with per-case outcomes and durations.
+Summed phase or testcase durations measure worker time, not elapsed wall time.
+Test code, fixtures, and platform-dependent skip behavior remain unchanged.
 
 When comparing CI timings, report the `Run tests` step duration separately from
 the total job duration, which also includes setup and dependency installation.
