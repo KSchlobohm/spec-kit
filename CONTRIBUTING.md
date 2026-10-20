@@ -284,12 +284,24 @@ uv pip install -e ".[test]"
 
 #### CI test matrix
 
-The [Test & Lint Python workflow](.github/workflows/test.yml) runs the full test
-suite with `uv run pytest -n 2` on `ubuntu-latest`, `windows-latest`, and
-`macos-latest`, each with Python 3.13 and 3.14 (six test jobs). Each job installs
-dependencies with `uv sync --extra test` and uses two pytest-xdist worker
-processes within that job. This does not add Actions jobs or reduce test
-coverage. A separate Ubuntu job runs Ruff with Python 3.14.
+The [Test & Lint Python workflow](.github/workflows/test.yml) temporarily runs
+only `tests/specify_cli/integrations/test_installed_adapters.py` on
+`windows-latest` with Python 3.13 and two pytest-xdist workers. This diagnostic
+uses pytest's built-in `--durations=0 --durations-min=0` reporting to show all
+setup, call, and teardown timings. It does not run either half-suite or add a
+profiler, dependency, or permission.
+A separate Ubuntu job runs Ruff with Python 3.14.
+
+The original six-platform half-2 measurement remains recorded at commit
+`1bc05c0e2d69a7ca2caa300e751b11a3d5c2f361` and
+[run 39291884363](https://github.com/KSchlobohm/spec-kit/actions/runs/39291884363).
+The fixed partition manifest and selector remain unchanged. This follow-up is
+measurement-only, not a merge candidate or an optimization.
+
+The test step reports pass/skip counts, skip reasons, and phase durations. The
+Windows job uploads `test-results.xml` with per-case outcomes and durations.
+Summed phase or testcase durations measure worker time, not elapsed wall time.
+Test code, fixtures, and platform-dependent skip behavior remain unchanged.
 
 When comparing CI timings, report the `Run tests` step duration separately from
 the total job duration, which also includes setup and dependency installation.
