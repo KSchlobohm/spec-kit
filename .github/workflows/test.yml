@@ -32,7 +32,7 @@ jobs:
     strategy:
       matrix:
         os: [windows-latest]
-        python-version: ["3.13", "3.14"]
+        python-version: ["3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,7 +164,7 @@ jobs:
           $timingFile = Join-Path $outputDir "timing.txt"
           $started = [DateTimeOffset]::UtcNow
           "Test step started at (UTC): $($started.ToString('o'))" | Tee-Object -FilePath $timingFile
-          uv run pytest -p pytest_phase_timings --phase-timings-output="$phaseTimingsFile" -n auto --durations=0 --durations-min=0 -ra --junitxml="$junitFile" 2>&1 |
+          uv run pytest -p pytest_phase_timings --phase-timings-output="$phaseTimingsFile" -n auto --maxschedchunk=25 --durations=0 --durations-min=0 -ra --junitxml="$junitFile" 2>&1 |
             Tee-Object -FilePath $logFile
           $pytestExitCode = $LASTEXITCODE
           $ended = [DateTimeOffset]::UtcNow
