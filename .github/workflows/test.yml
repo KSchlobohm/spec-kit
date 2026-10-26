@@ -1,6 +1,7 @@
 name: Test & Lint Python
 
 permissions:
+  actions: read
   contents: read
 
 on:
@@ -30,11 +31,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.13", "3.14"]
+        os: [windows-latest]
+        python-version: ["3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out upstream baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: github/spec-kit
+          ref: 0bd4773e2e268d89bc6c1bf754aa989da9ae2dab
+          path: source
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -44,12 +52,135 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Capture runner and symlink capability
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE "diagnostic-output"
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+          $environmentFile = Join-Path $outputDir "environment.txt"
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" | ConvertFrom-Json
+          $jobs = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs" | ConvertFrom-Json
+          $job = $jobs.jobs | Where-Object { $_.name -eq "pytest (windows-latest, $env:PYTHON_VERSION)" } | Select-Object -First 1
+          @(
+            "Workflow ref SHA: $env:GITHUB_SHA"
+            "Checked-out source SHA: $(git -C source rev-parse HEAD)"
+            "Upstream baseline SHA: 0bd4773e2e268d89bc6c1bf754aa989da9ae2dab"
+            "Workflow run ID: $env:GITHUB_RUN_ID"
+            "Workflow run URL: $($run.html_url)"
+            "Job ID: $($job.id)"
+            "Runner name: $env:RUNNER_NAME"
+            "Runner OS: $env:RUNNER_OS"
+            "Runner image OS: $env:ImageOS"
+            "Runner image version: $env:ImageVersion"
+            "Logical processors: $([Environment]::ProcessorCount)"
+            "Python: $(python --version 2>&1)"
+            "uv: $(uv --version)"
+            "Workflow run created at (UTC): $($run.created_at)"
+            "Workflow run started at (UTC): $($run.run_started_at)"
+            "Job started at (UTC): $($job.started_at)"
+            "Run queue delay seconds: $([DateTimeOffset]::Parse($run.run_started_at).Subtract([DateTimeOffset]::Parse($run.created_at)).TotalSeconds)"
+            "Job queue delay after run start seconds: $([DateTimeOffset]::Parse($job.started_at).Subtract([DateTimeOffset]::Parse($run.run_started_at)).TotalSeconds)"
+          ) | Set-Content -Path $environmentFile -Encoding utf8
+
+          $probeRoot = Join-Path $env:RUNNER_TEMP "symlink-capability-probe-$env:GITHUB_RUN_ID-$env:RUNNER_NAME"
+          try {
+            New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
+            $targetFile = Join-Path $probeRoot "target.txt"
+            $targetDirectory = Join-Path $probeRoot "target-directory"
+            Set-Content -Path $targetFile -Value "probe"
+            New-Item -ItemType Directory -Path $targetDirectory | Out-Null
+            foreach ($probe in @(
+              @{ Name = "file"; Path = (Join-Path $probeRoot "file-link"); Target = $targetFile },
+              @{ Name = "directory"; Path = (Join-Path $probeRoot "directory-link"); Target = $targetDirectory }
+            )) {
+              try {
+                New-Item -ItemType SymbolicLink -Path $probe.Path -Target $probe.Target -ErrorAction Stop | Out-Null
+                $attributes = (Get-Item -Force -LiteralPath $probe.Path).Attributes
+                if (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+                  throw "Created path is not marked as a reparse point."
+                }
+                "$($probe.Name) symlink: created and verified" | Tee-Object -FilePath $environmentFile -Append
+              }
+              catch {
+                $nativeCode = $_.Exception.HResult -band 0xFFFF
+                $classification = if ($nativeCode -eq 1314 -or $_.Exception.Message -match "privilege|SeCreateSymbolicLinkPrivilege") {
+                  "privilege/Developer Mode restriction"
+                } else {
+                  "other error"
+                }
+                "$($probe.Name) symlink: $classification (HRESULT $($_.Exception.HResult); $($_.Exception.Message))" | Tee-Object -FilePath $environmentFile -Append
+              }
+              finally {
+                Remove-Item -LiteralPath $probe.Path -Force -ErrorAction SilentlyContinue
+              }
+            }
+          }
+          finally {
+            Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          Get-Content -Path $environmentFile
+
       - name: Install dependencies
+        working-directory: source
         run: uv sync --extra test
+
+      - name: Record dependency versions
+        shell: pwsh
+        working-directory: source
+        run: |
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE "diagnostic-output"
+          @'
+          import importlib.metadata as metadata
+
+          distributions = sorted(
+              metadata.distributions(),
+              key=lambda dist: (dist.metadata.get("Name") or "").casefold(),
+          )
+          for distribution in distributions:
+              print(f"{distribution.metadata.get('Name', 'unknown')}=={distribution.version}")
+          '@ | uv run python - | Set-Content -Path (Join-Path $outputDir "dependencies.txt") -Encoding utf8
+          Get-Content -Path (Join-Path $outputDir "dependencies.txt")
+          uv run python -m pytest --version | Tee-Object -FilePath (Join-Path $outputDir "test-tools.txt")
+          uv run python -c "import xdist; print(f'pytest-xdist=={xdist.__version__}')" |
+            Tee-Object -FilePath (Join-Path $outputDir "test-tools.txt") -Append
 
       # On windows-latest, bash tests auto-skip unless Git-for-Windows
       # bash (MSYS2/MINGW) is detected. The WSL launcher is rejected
       # because it cannot handle native Windows paths in test fixtures.
       # See tests/conftest.py::_has_working_bash() for details.
-      - name: Run tests
-        run: uv run pytest
+      - name: Run full pytest suite
+        shell: pwsh
+        working-directory: source
+        run: |
+          $pluginPath = Join-Path $env:GITHUB_WORKSPACE ".github\scripts"
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE "diagnostic-output"
+          $env:PYTHONPATH = if ($env:PYTHONPATH) { "$pluginPath;$env:PYTHONPATH" } else { $pluginPath }
+          $logFile = Join-Path $outputDir "pytest.log"
+          $junitFile = Join-Path $outputDir "junit.xml"
+          $phaseTimingsFile = Join-Path $outputDir "pytest-phases.csv"
+          $timingFile = Join-Path $outputDir "timing.txt"
+          $started = [DateTimeOffset]::UtcNow
+          "Test step started at (UTC): $($started.ToString('o'))" | Tee-Object -FilePath $timingFile
+          uv run pytest -p pytest_phase_timings --phase-timings-output="$phaseTimingsFile" -n auto --maxschedchunk=25 --durations=0 --durations-min=0 -ra --junitxml="$junitFile" 2>&1 |
+            Tee-Object -FilePath $logFile
+          $pytestExitCode = $LASTEXITCODE
+          $ended = [DateTimeOffset]::UtcNow
+          "Test step ended at (UTC): $($ended.ToString('o'))" | Tee-Object -FilePath $timingFile -Append
+          "Test step elapsed seconds: $($ended.Subtract($started).TotalSeconds)" | Tee-Object -FilePath $timingFile -Append
+          "pytest exit code: $pytestExitCode" | Tee-Object -FilePath $timingFile -Append
+          Select-String -Path $logFile -Pattern "created:?\s+\d+(?:/\d+)? workers?" |
+            ForEach-Object { "pytest-xdist worker report: $($_.Line)" } |
+            Tee-Object -FilePath $timingFile -Append
+          exit $pytestExitCode
+
+      - name: Upload diagnostic results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-pytest-diagnostic-python-${{ matrix.python-version }}
+          path: diagnostic-output/
+          if-no-files-found: warn
+          retention-days: 30
