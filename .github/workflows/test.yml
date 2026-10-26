@@ -29,9 +29,11 @@ jobs:
   pytest:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.13", "3.14"]
+        workers: ["2", "4", "auto"]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,5 +53,15 @@ jobs:
       # bash (MSYS2/MINGW) is detected. The WSL launcher is rejected
       # because it cannot handle native Windows paths in test fixtures.
       # See tests/conftest.py::_has_working_bash() for details.
+      - name: Report CPU count
+        run: uv run python -c "import os; print('cpu_count', os.cpu_count())"
+
       - name: Run tests
-        run: uv run pytest -n 2
+        run: uv run pytest -n ${{ matrix.workers }} -ra --junitxml=test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-${{ matrix.os }}-${{ matrix.python-version }}-n${{ matrix.workers }}-attempt${{ github.run_attempt }}
+          path: test-results.xml
