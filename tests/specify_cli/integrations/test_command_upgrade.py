@@ -22,11 +22,78 @@ from tests.specify_cli.integrations._helpers import (
     _integration_list_row_cells,  # noqa: F401
     _move_kilocode_install_to_legacy_layout,  # noqa: F401
     _run_in_project,  # noqa: F401
+    _symlink_or_skip,
+    _tree,
     _write_invalid_manifest,  # noqa: F401
     runner,  # noqa: F401
 )
 
 class TestIntegrationUpgradeDetailed:
+    @pytest.mark.parametrize(
+        "bad_handler",
+        [
+            {"command": "speckit.bad.check", "matcher": ["Bash"]},
+            {"command": "speckit.bad.check", "timeout": "30"},
+        ],
+        ids=["matcher-list", "timeout-string"],
+    )
+    def test_upgrade_skips_invalid_unregistered_extension_events(self, tmp_path, caplog, bad_handler):
+        project = _init_project(tmp_path, "claude")
+        for ext_id, handler in (
+            ("bad", bad_handler),
+            ("good", {"command": "speckit.good.check", "matcher": "Bash"}),
+        ):
+            ext_dir = project / ".specify" / "extensions" / ext_id
+            ext_dir.mkdir(parents=True)
+            (ext_dir / "extension.yml").write_text(
+                json.dumps({"events": {"pre_tool_use": handler}}), encoding="utf-8"
+            )
+
+        result = _run_in_project(project, ["integration", "upgrade", "claude", "--force"])
+
+        assert result.exit_code == 0, result.output
+        config = json.loads((project / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        hooks = config["hooks"]["PreToolUse"]
+        commands = [item["command"] for group in hooks for item in group["hooks"]]
+        assert any("speckit.good.check" in command for command in commands)
+        assert all("speckit.bad.check" not in command for command in commands)
+        assert "bad" in caplog.text and "pre_tool_use" in caplog.text
+
+    @pytest.mark.parametrize("integration", ["claude", "copilot", "gemini"])
+    @pytest.mark.parametrize("force", [False, True])
+    def test_disabling_events_honors_modified_dispatcher_force(self, tmp_path, integration, force):
+        from specify_cli.events import install_integration_events
+        from specify_cli.integrations import get_integration
+        from specify_cli.integrations.manifest import IntegrationManifest
+
+        project = _init_project(tmp_path, integration)
+        manifest = IntegrationManifest.load(integration, project)
+        install_integration_events(
+            get_integration(integration), project, manifest,
+            {"pre_tool_use": [{"command": "speckit.x"}]},
+        )
+        manifest.save()
+        dispatcher = project / ".specify/events.py"
+        content = b"# User-modified dispatcher\n"
+        dispatcher.write_bytes(content)
+        args = [
+            "integration", "upgrade", integration,
+            "--integration-options", "--events false",
+        ]
+        if force:
+            args.append("--force")
+
+        result = _run_in_project(project, args)
+
+        assert result.exit_code == (0 if force else 1), result.output
+        if force:
+            assert not dispatcher.exists()
+            updated = IntegrationManifest.load(integration, project)
+            assert ".specify/events.py" not in updated.files
+        else:
+            assert dispatcher.read_bytes() == content
+            assert "modified" in result.output
+
     def test_upgrade_invalid_manifest_reports_cli_error(self, tmp_path):
         project = _init_project(tmp_path, "claude")
         _write_invalid_manifest(project, "claude")
@@ -1413,8 +1480,13 @@ class TestIntegrationUpgradeDetailed:
         assert reloaded["files"]["ok.md"] == ok_hash
         assert reloaded["files"]["bad.md"] == stale_hash
 
+    @pytest.mark.parametrize(
+        "unmodified_files",
+        [None, {"bad.md", "ok.md"}],
+        ids=["upgrade", "use-or-switch-snapshot"],
+    )
     def test_resync_manifest_probe_error_does_not_abort_remaining_files(
-        self, tmp_path, capsys
+        self, tmp_path, capsys, unmodified_files
     ):
         """An ``OSError`` from the pre-rehash filesystem probes must warn
         and continue, not abort the whole resync loop.
@@ -1422,7 +1494,9 @@ class TestIntegrationUpgradeDetailed:
         ``is_symlink()``/``is_file()`` run before the per-file ``try`` that
         wraps ``record_existing()``. If one of those probes raises (e.g. an
         inaccessible path), it must not jump past the remaining files in
-        ``new_manifest.files`` and leave their hashes stale.
+        ``new_manifest.files`` and leave their hashes stale. With
+        ``unmodified_files`` (``use`` and installed-target ``switch``, #5078)
+        the changed-bytes check also runs per file, inside that ``try``.
         """
         from specify_cli.integrations._helpers import (
             _resync_manifest_after_registration,
@@ -1456,7 +1530,10 @@ class TestIntegrationUpgradeDetailed:
 
         with mock.patch.object(Path, "is_file", fake_is_file):
             _resync_manifest_after_registration(
-                manifest, "claude", continuing="Continuing."
+                manifest,
+                "claude",
+                continuing="Continuing.",
+                unmodified_files=unmodified_files,
             )
 
         captured = strip_ansi(capsys.readouterr().out)
@@ -1469,6 +1546,160 @@ class TestIntegrationUpgradeDetailed:
             "a probe error on an earlier file must not abort rehashing of "
             "the remaining tracked files"
         )
+
+    def test_resync_with_snapshot_skips_files_registration_left_unchanged(
+        self, tmp_path
+    ):
+        """With ``unmodified_files`` only changed bytes are re-recorded (#5078).
+
+        ``record_existing()`` clears a file's recovered marker, so a file
+        that registration didn't touch must keep its entry as it was.
+        """
+        from specify_cli.integrations._helpers import (
+            _resync_manifest_after_registration,
+        )
+        from specify_cli.integrations.manifest import IntegrationManifest
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "kept.md").write_text("kept content\n", encoding="utf-8")
+        (project / "ok.md").write_text("ok content\n", encoding="utf-8")
+
+        manifest = IntegrationManifest("claude", project, version="test")
+        manifest.record_existing("kept.md", recovered=True)
+        manifest.record_existing("ok.md")
+        manifest.save()
+        (project / "ok.md").write_text("ok content v2\n", encoding="utf-8")
+
+        _resync_manifest_after_registration(
+            manifest,
+            "claude",
+            continuing="Continuing.",
+            unmodified_files={"kept.md", "ok.md"},
+        )
+
+        reloaded = IntegrationManifest.load("claude", project)
+        assert reloaded.is_recovered("kept.md")
+        ok_hash = hashlib.sha256((project / "ok.md").read_bytes()).hexdigest()
+        assert reloaded.files["ok.md"] == ok_hash
+
+    def test_snapshot_follows_check_modified_rules_one_file_at_a_time(
+        self, tmp_path, capsys
+    ):
+        """The snapshot matches ``check_modified()`` for paths in the project.
+
+        A deleted file counts as unmodified, an edited one as modified, and a
+        file that can't be probed only drops itself from the snapshot (#5078),
+        with a warning, since its hash won't be refreshed.
+        """
+        import unittest.mock as mock
+
+        from specify_cli.integrations._helpers import (
+            _snapshot_manifest_before_registration,
+        )
+        from specify_cli.integrations.manifest import IntegrationManifest
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        for name in ("ok.md", "edited.md", "deleted.md", "bad.md"):
+            (project / name).write_bytes(f"{name} content\n".encode())
+
+        manifest = IntegrationManifest("claude", project, version="test")
+        for name in ("ok.md", "edited.md", "deleted.md", "bad.md"):
+            manifest.record_existing(name)
+        manifest.save()
+        (project / "edited.md").write_bytes(b"user edit\n")
+        (project / "deleted.md").unlink()
+
+        real_is_file = Path.is_file
+
+        def fake_is_file(self):
+            if self.name == "bad.md":
+                raise OSError("permission denied")
+            return real_is_file(self)
+
+        with mock.patch.object(Path, "is_file", fake_is_file):
+            snapshot, unmodified = _snapshot_manifest_before_registration(
+                project, "claude"
+            )
+
+        assert snapshot is not None, "one unreadable file must not drop the snapshot"
+        assert unmodified == {"ok.md", "deleted.md"}
+
+        captured = strip_ansi(capsys.readouterr().out)
+        assert "Warning:" in captured
+        assert "'bad.md'" in captured, "an unreadable file was skipped silently"
+        assert "edited.md" not in captured, "a user edit is not an error"
+
+    @pytest.mark.parametrize("escape", ["dotdot", "symlinked-parent"])
+    def test_snapshot_skips_manifest_paths_outside_the_project(
+        self, tmp_path, capsys, escape
+    ):
+        """Paths that record_existing() rejects stay out of the snapshot.
+
+        They are never hashed either, so the snapshot and the resync's
+        changed-bytes check (#5078) can't read a file outside the project.
+        """
+        import unittest.mock as mock
+
+        from specify_cli.integrations import manifest as manifest_module
+        from specify_cli.integrations._helpers import (
+            _resync_manifest_after_registration,
+            _snapshot_manifest_before_registration,
+        )
+        from specify_cli.integrations.manifest import IntegrationManifest
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        secret = outside / "secret.md"
+        secret.write_text("outside project\n", encoding="utf-8")
+        (project / "ok.md").write_text("ok content\n", encoding="utf-8")
+
+        if escape == "dotdot":
+            escaping_key = "../outside/secret.md"
+        else:
+            try:
+                (project / "outside-link").symlink_to(
+                    outside, target_is_directory=True
+                )
+            except OSError as exc:
+                pytest.skip(f"symlinks unavailable: {exc}")
+            escaping_key = "outside-link/secret.md"
+
+        manifest = IntegrationManifest("claude", project, version="test")
+        manifest.record_existing("ok.md")
+        manifest._files[escaping_key] = hashlib.sha256(secret.read_bytes()).hexdigest()
+        manifest.save()
+
+        hashed: list[str] = []
+        real_sha256 = manifest_module._sha256
+
+        def recording_sha256(path):
+            hashed.append(Path(path).name)
+            return real_sha256(path)
+
+        with mock.patch.object(manifest_module, "_sha256", recording_sha256):
+            snapshot, unmodified = _snapshot_manifest_before_registration(
+                project, "claude"
+            )
+            assert snapshot is not None
+            assert unmodified == {"ok.md"}
+            assert "secret.md" not in hashed, "the snapshot hashed a path outside the project"
+            assert f"'{escaping_key}'" in strip_ansi(capsys.readouterr().out), (
+                "a path left out of the snapshot was skipped silently"
+            )
+
+            # The resync checks paths itself too, as a new-target switch
+            # passes every tracked file.
+            _resync_manifest_after_registration(
+                snapshot,
+                "claude",
+                continuing="Continuing.",
+                unmodified_files=set(snapshot.files),
+            )
+            assert "secret.md" not in hashed, "the resync hashed a path outside the project"
 
     def test_upgrade_non_active_agent_preserves_active_agent_skills(self, tmp_path):
         """Upgrading a non-active agent must not touch the active agent's skills.
@@ -1719,3 +1950,303 @@ class TestIntegrationUpgradeBasic:
             os.chdir(old)
         assert result.exit_code == 0
         assert "Nothing to upgrade" in result.output
+
+
+def test_upgrade_resource_force_is_user_controlled(tmp_path):
+    import yaml
+    from specify_cli.extensions import ExtensionManager
+
+    project = _init_project(tmp_path, "claude")
+    source = tmp_path / "resource-ext"
+    (source / "commands").mkdir(parents=True)
+    (source / "references").mkdir()
+    (source / "references/r.md").write_text("original")
+    (source / "commands/run.md").write_text("Read references/r.md")
+    (source / "extension.yml").write_text(yaml.safe_dump({
+        "schema_version": "1.0",
+        "extension": {"id": "resource-ext", "name": "Resource", "version": "1.0.0", "description": "test"},
+        "requires": {"speckit_version": ">=0.1.0"},
+        "provides": {"commands": [{"name": "speckit.resource-ext.run", "file": "commands/run.md", "resources": ["references/r.md"]}]},
+    }))
+    manager = ExtensionManager(project)
+    manager.install_from_directory(source, "1.0.0")
+    resource = project / ".claude/skills/speckit-resource-ext-run/references/r.md"
+    original_hash = manager.registry.get("resource-ext")["skill_resource_hashes"]["project"][resource.relative_to(project).as_posix()]
+    resource.write_text("edited")
+    result = _run_in_project(project, ["integration", "upgrade", "claude", "--script", "sh"])
+    assert result.exit_code == 0, result.output
+    assert resource.read_text() == "edited"
+    assert ExtensionManager(project).registry.get("resource-ext")["skill_resource_hashes"]["project"][resource.relative_to(project).as_posix()] == original_hash
+    result = _run_in_project(project, ["integration", "upgrade", "claude", "--script", "sh", "--force"])
+    assert result.exit_code == 0, result.output
+    assert resource.read_text() == "original"
+
+
+@pytest.mark.parametrize("failure", ["setup", "manifest", "state"])
+def test_builtin_upgrade_rolls_back_when_it_fails_before_committing(tmp_path, monkeypatch, failure):
+    """A failure after setup() starts and before the state commit restores the project."""
+    from specify_cli.integrations import command_upgrade
+    from specify_cli.integrations.claude import ClaudeIntegration
+    from specify_cli.integrations.manifest import IntegrationManifest
+
+    project = _init_project(tmp_path, "claude")
+    skills = project / ".claude" / "skills"
+    (skills / "speckit-plan" / "SKILL.md").write_text("# user customization\n", encoding="utf-8")
+    (skills / "speckit-tasks" / "SKILL.md").unlink()
+    (skills / "speckit-tasks").rmdir()
+    # --force makes the first shared-infrastructure pass overwrite this.
+    template = next((project / ".specify" / "templates").glob("*.md"))
+    template.write_text("customized\n", encoding="utf-8")
+    if os.name != "nt":
+        # No upgrade pass rewrites an extension script, so only the journal
+        # can undo ensure_executable_scripts() making it executable.
+        script = project / ".specify" / "extensions" / "demo" / "run.sh"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        script.chmod(0o644)
+    before = _tree(project)
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    if failure == "setup":
+        real_setup = ClaudeIntegration.setup
+
+        def setup(self, *args, **kwargs):
+            real_setup(self, *args, **kwargs)
+            fail()
+
+        monkeypatch.setattr(ClaudeIntegration, "setup", setup)
+    elif failure == "manifest":
+        real_save = IntegrationManifest.save
+
+        def save(self, *args, **kwargs):
+            if self.key == "claude":
+                fail()
+            return real_save(self, *args, **kwargs)
+
+        monkeypatch.setattr(IntegrationManifest, "save", save)
+    else:
+        monkeypatch.setattr(command_upgrade, "_write_integration_json", fail)
+
+    result = _run_in_project(project, ["integration", "upgrade", "claude", "--force"])
+
+    assert result.exit_code != 0
+    assert "disk full" in result.output
+    assert _tree(project) == before
+
+
+def test_builtin_upgrade_journal_needs_no_trust_store_or_other_manifests(tmp_path, monkeypatch):
+    """The journal adds no precondition a built-in upgrade did not already have."""
+    from specify_cli.integrations import installer
+
+    project = _init_project(tmp_path, "claude")
+    result = _run_in_project(project, ["integration", "install", "copilot", "--script", "sh", "--force"])
+    assert result.exit_code == 0, result.output
+    (project / ".specify" / "integrations" / "copilot.manifest.json").write_bytes(b"\xff")
+
+    def no_trust_store(*args, **kwargs):
+        raise AssertionError("a built-in upgrade must not touch the trust store")
+
+    monkeypatch.setattr(installer, "_trust_store", no_trust_store)
+    # A ValueError from the corrupt manifest must not silently disable the journal.
+    from specify_cli.integrations import _lifecycle
+
+    entered = []
+    real_journalled = _lifecycle._journalled
+
+    def journalled(*args, **kwargs):
+        entered.append(True)
+        return real_journalled(*args, **kwargs)
+
+    monkeypatch.setattr(_lifecycle, "_journalled", journalled)
+
+    result = _run_in_project(project, ["integration", "upgrade", "claude", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert entered
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")
+def test_builtin_upgrade_runs_unjournalled_when_a_scope_is_a_symlink(tmp_path):
+    """A layout the journal cannot cover keeps upgrading as it did before."""
+    project = _init_project(tmp_path, "claude")
+    shared = tmp_path / "shared-extensions"
+    shared.mkdir()
+    extensions = project / ".specify" / "extensions"
+    if extensions.exists():
+        shutil.rmtree(extensions)
+    try:
+        extensions.symlink_to(shared, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    result = _run_in_project(project, ["integration", "upgrade", "claude", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert extensions.is_symlink()
+
+
+def _fail_claude_setup(monkeypatch, integration_class=None):
+    from specify_cli.integrations.claude import ClaudeIntegration
+
+    integration_class = integration_class or ClaudeIntegration
+    real_setup = integration_class.setup
+
+    def setup(self, *args, **kwargs):
+        real_setup(self, *args, **kwargs)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(integration_class, "setup", setup)
+
+
+def test_ensure_executable_scripts_propagates_a_journal_refusal(tmp_path):
+    """A journal that refuses the chmod fails the operation instead of logging a warning."""
+    from specify_cli import ensure_executable_scripts
+    from specify_cli.integrations import installer
+    from specify_cli.integrations._file_changes import file_change_observer
+
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    script = tmp_path / ".specify" / "scripts" / "run.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o644)
+
+    def refuse(*args):
+        raise installer.IntegrationInstallError("snapshot budget exceeded")
+
+    token = file_change_observer.set(refuse)
+    try:
+        with pytest.raises(installer.IntegrationInstallError):
+            ensure_executable_scripts(tmp_path)
+    finally:
+        file_change_observer.reset(token)
+    assert script.stat().st_mode & 0o777 == 0o644
+
+
+def test_builtin_upgrade_runs_unjournalled_when_copilot_settings_is_a_symlink(tmp_path, monkeypatch):
+    """Copilot's untracked settings merge target is checked before any writes."""
+    from specify_cli.integrations.copilot import CopilotIntegration
+
+    template = tmp_path / "vscode-settings.json"
+    template.write_text('{"chat.promptFiles": true}\n', encoding="utf-8")
+    monkeypatch.setattr(CopilotIntegration, "_vscode_settings_path", lambda self: template)
+    # Only the commands layout writes the settings file.
+    project = _init_project(tmp_path, "copilot", "--commands")
+    settings = project / ".vscode" / "settings.json"
+    # A settings file the user already had is merged into, never tracked.
+    manifest_path = project / ".specify" / "integrations" / "copilot.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["files"].pop(".vscode/settings.json", None) is not None
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    real = tmp_path / "real-settings.json"
+    # An empty object, so the upgrade's merge has to write.
+    real.write_text("{}\n", encoding="utf-8")
+    settings.parent.mkdir(exist_ok=True)
+    settings.unlink(missing_ok=True)
+    _symlink_or_skip(settings, real)
+
+    result = _run_in_project(project, ["integration", "upgrade", "copilot", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert settings.is_symlink()
+    assert json.loads(real.read_text(encoding="utf-8")) == {"chat.promptFiles": True}
+
+
+@pytest.mark.parametrize("commands_dir", [".new-commands/nested", "./.new-commands/nested"])
+def test_builtin_upgrade_rollback_removes_a_new_generic_commands_dir(tmp_path, monkeypatch, commands_dir):
+    """Changing --commands-dir and then failing leaves no new directories behind."""
+    from specify_cli.integrations.generic import GenericIntegration
+
+    project = _init_project(tmp_path, "generic", "--commands-dir .old-commands")
+    before = _tree(project)
+    _fail_claude_setup(monkeypatch, GenericIntegration)
+
+    result = _run_in_project(project, [
+        "integration", "upgrade", "generic", "--force",
+        "--integration-options", f"--commands-dir {commands_dir}",
+    ])
+
+    assert result.exit_code != 0
+    assert "disk full" in result.output
+    assert not (project / ".new-commands").exists()
+    assert _tree(project) == before
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError, RuntimeError])
+def test_builtin_upgrade_runs_unjournalled_when_output_discovery_fails(tmp_path, monkeypatch, error):
+    """An integration that cannot name its output folders still upgrades, unjournalled."""
+    from specify_cli.integrations import _lifecycle
+    from specify_cli.integrations.claude import ClaudeIntegration
+
+    project = _init_project(tmp_path, "claude")
+
+    def fail(self, *args, **kwargs):
+        raise error("cannot resolve output folders")
+
+    monkeypatch.setattr(ClaudeIntegration, "upgrade_output_folders", fail)
+    entered = []
+    real_journalled = _lifecycle._journalled
+
+    def journalled(*args, **kwargs):
+        entered.append(True)
+        return real_journalled(*args, **kwargs)
+
+    monkeypatch.setattr(_lifecycle, "_journalled", journalled)
+
+    result = _run_in_project(project, ["integration", "upgrade", "claude", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert not entered
+
+
+def test_builtin_upgrade_rollback_removes_a_commands_dir_created_before_the_first_write(tmp_path, monkeypatch):
+    """A new --commands-dir created before setup() fails is removed with its new parents."""
+    from specify_cli.integrations.generic import GenericIntegration
+
+    project = _init_project(tmp_path, "generic", "--commands-dir .old-commands")
+    before = _tree(project)
+    missing = tmp_path / "templates" / "plan.md"
+    monkeypatch.setattr(GenericIntegration, "list_command_templates", lambda self: [missing])
+
+    result = _run_in_project(project, [
+        "integration", "upgrade", "generic", "--force",
+        "--integration-options", "--commands-dir .new-commands/nested",
+    ])
+
+    assert result.exit_code != 0
+    assert _tree(project) == before
+
+
+def test_builtin_upgrade_runs_unjournalled_when_a_new_generic_output_is_a_symlink(tmp_path):
+    """Switching --commands-dir to an untracked directory with a symlinked output upgrades as before."""
+    project = _init_project(tmp_path, "generic", "--commands-dir .old-commands")
+    commands = project / ".new-commands"
+    commands.mkdir()
+    target = project / "shared-plan.md"
+    target.write_text("user plan\n", encoding="utf-8")
+    _symlink_or_skip(commands / "speckit.plan.md", target)
+
+    result = _run_in_project(project, [
+        "integration", "upgrade", "generic", "--force",
+        "--integration-options", "--commands-dir .new-commands",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert (commands / "speckit.plan.md").is_symlink()
+
+
+def test_builtin_upgrade_rollback_removes_shared_dirs_created_before_a_planning_failure(tmp_path):
+    """A shared-infrastructure directory created before the first file write is removed on rollback."""
+    project = _init_project(tmp_path, "claude")
+    templates = project / ".specify" / "templates"
+    shutil.rmtree(templates)
+    templates.write_text("not a directory\n", encoding="utf-8")
+    before = _tree(project)
+
+    result = _run_in_project(project, ["integration", "upgrade", "claude", "--force", "--script", "py"])
+
+    assert result.exit_code != 0
+    assert not (project / ".specify" / "scripts" / "python").exists()
+    assert _tree(project) == before

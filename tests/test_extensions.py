@@ -384,11 +384,25 @@ class TestExtensionManifest:
         with pytest.raises(ValidationError, match="not valid UTF-8"):
             ExtensionManifest(manifest_path)
 
-    def test_invalid_extension_id(self, temp_dir, valid_manifest_data):
+    @pytest.mark.parametrize(
+        "extension_id",
+        [
+            "Invalid_ID",
+            "",
+            "../test-ext",
+            "test-ext\n",
+            "test-ext\r\n",
+            "test\next",
+            "test-ext ",
+            " test-ext",
+        ],
+    )
+    def test_invalid_extension_id(self, temp_dir, valid_manifest_data, extension_id):
         """Test manifest with invalid extension ID format."""
         import yaml
 
-        valid_manifest_data["extension"]["id"] = "Invalid_ID"  # Uppercase not allowed
+        valid_manifest_data["extension"]["id"] = extension_id
+        valid_manifest_data["provides"]["commands"] = []
 
         manifest_path = temp_dir / "extension.yml"
         with open(manifest_path, 'w') as f:
@@ -634,6 +648,29 @@ class TestExtensionManifest:
         assert manifest.commands[0]["aliases"] == ["speckit.hello"]
         assert manifest.warnings == []
 
+    def test_command_resources_valid_patterns(self, temp_dir, valid_manifest_data):
+        command = valid_manifest_data["provides"]["commands"][0]
+        manifest_path = temp_dir / "extension.yml"
+        manifest_path.write_text(yaml.safe_dump(valid_manifest_data), encoding="utf-8")
+        assert ExtensionManifest(manifest_path).commands[0]["resources"] == []
+
+        command["resources"] = ["references/r.md", "templates/*.md", r"assets\**"]
+        manifest_path.write_text(yaml.safe_dump(valid_manifest_data), encoding="utf-8")
+        assert ExtensionManifest(manifest_path).commands[0]["resources"] == [
+            "references/r.md", "templates/*.md", "assets/**"
+        ]
+
+    @pytest.mark.parametrize("resources", [
+        None, "x", [1], [""], ["  "], ["/absolute"], [r"C:\absolute"],
+        ["a/../b"], [r"a\..\b"], ["!secret"], ["[z-a]"],
+    ])
+    def test_command_resources_invalid(self, temp_dir, valid_manifest_data, resources):
+        valid_manifest_data["provides"]["commands"][0]["resources"] = resources
+        manifest_path = temp_dir / "extension.yml"
+        manifest_path.write_text(yaml.safe_dump(valid_manifest_data), encoding="utf-8")
+        with pytest.raises(ValidationError, match="[Rr]esource"):
+            ExtensionManifest(manifest_path)
+
     def test_valid_command_name_has_no_warnings(self, temp_dir, valid_manifest_data):
         """Test that a correctly-named command produces no warnings."""
         import yaml
@@ -876,6 +913,26 @@ provides:
             yaml.dump(valid_manifest_data, f)
 
         with pytest.raises(ValidationError, match="Invalid hook 'after_tasks'"):
+            ExtensionManifest(manifest_path)
+
+    @pytest.mark.parametrize("as_list", [False, True])
+    @pytest.mark.parametrize("command", [
+        pytest.param(["speckit.test-ext.hello"], id="list"),
+        pytest.param({"name": "speckit.test-ext.hello"}, id="mapping"),
+        pytest.param(123, id="integer"),
+        pytest.param(True, id="boolean"),
+        pytest.param("  ", id="blank"),
+    ])
+    def test_hook_command_must_be_a_string(
+        self, temp_dir, valid_manifest_data, command, as_list
+    ):
+        """Reject non-string commands before hook registration can fail (#5080)."""
+        entry = {"command": command}
+        valid_manifest_data["hooks"]["after_tasks"] = [entry] if as_list else entry
+        manifest_path = temp_dir / "extension.yml"
+        manifest_path.write_text(yaml.safe_dump(valid_manifest_data), encoding="utf-8")
+
+        with pytest.raises(ValidationError, match="Hook 'after_tasks' missing required 'command' string"):
             ExtensionManifest(manifest_path)
 
     def test_hook_single_mapping_still_accepted(self, extension_dir):
@@ -1726,6 +1783,7 @@ class TestExtensionManager:
             project_root,
             link_outputs=False,
             create_missing_active_skills_dir=False,
+            **kwargs,
         ):
             captured["create_missing_active_skills_dir"] = (
                 create_missing_active_skills_dir
@@ -1763,11 +1821,14 @@ class TestExtensionManager:
             extension_id=None,
             only_agent=None,
             author="github-spec-kit",
+            version=None,
+            **kwargs,
         ):
             captured["create_missing_active_skills_dir"] = (
                 create_missing_active_skills_dir
             )
             captured["extension_id"] = extension_id
+            captured["version"] = version
             return {}
 
         monkeypatch.setattr(
@@ -1782,6 +1843,7 @@ class TestExtensionManager:
 
         assert captured["create_missing_active_skills_dir"] is False
         assert captured["extension_id"] == manifest.id
+        assert captured["version"] == manifest.version
 
     def test_install_duplicate(self, extension_dir, project_dir):
         """Test installing already installed extension."""
@@ -2223,6 +2285,68 @@ class TestExtensionManager:
 
         assert manager.registry.is_installed("test-ext")
         assert config_file.read_bytes() == newer_bytes
+
+    def test_force_reinstall_extensionignore_invalid_utf8_preserves_install(
+        self, extension_dir, project_dir
+    ):
+        """A forced reinstall with invalid UTF-8 in .extensionignore preserves the existing install.
+
+        `.extensionignore` is loaded and validated before `remove()` tears down
+        the existing installation, so a ValidationError must leave the registry
+        entry, installed package files, and rendered outputs completely intact.
+        """
+        import copy
+
+        skills_dir = project_dir / ".claude" / "skills"
+        skills_dir.mkdir(parents=True)
+
+        manager = ExtensionManager(project_dir)
+        manager.install_from_directory(
+            extension_dir, "0.1.0", register_commands=True
+        )
+
+        ext_dir = project_dir / ".specify" / "extensions" / "test-ext"
+        rendered_skill = skills_dir / "speckit-test-ext-hello" / "SKILL.md"
+        assert rendered_skill.exists()
+
+        registry_before = copy.deepcopy(manager.registry.get("test-ext"))
+        assert registry_before is not None
+        installed_before = {
+            p.relative_to(ext_dir).as_posix(): p.read_bytes()
+            for p in ext_dir.rglob("*")
+            if p.is_file()
+        }
+        rendered_before = {
+            p.relative_to(skills_dir).as_posix(): p.read_bytes()
+            for p in skills_dir.rglob("*")
+            if p.is_file()
+        }
+
+        # Modify the source command and write invalid UTF-8 to .extensionignore
+        # so the forced reinstall must abort before removing or overwriting anything.
+        (extension_dir / "commands" / "hello.md").write_text(
+            "---\ndescription: \"Updated\"\n---\n\n# Updated\n\n$ARGUMENTS\n"
+        )
+        (extension_dir / ".extensionignore").write_bytes(b"caf\xe9/\n")
+
+        with pytest.raises(ValidationError, match=r"\.extensionignore is not valid UTF-8"):
+            manager.install_from_directory(
+                extension_dir, "0.1.0", register_commands=True, force=True
+            )
+
+        assert manager.registry.is_installed("test-ext")
+        assert manager.registry.get("test-ext") == registry_before
+        assert {
+            p.relative_to(ext_dir).as_posix(): p.read_bytes()
+            for p in ext_dir.rglob("*")
+            if p.is_file()
+        } == installed_before
+        assert {
+            p.relative_to(skills_dir).as_posix(): p.read_bytes()
+            for p in skills_dir.rglob("*")
+            if p.is_file()
+        } == rendered_before
+        assert not (project_dir / ".specify" / "extensions" / ".backup" / "test-ext").exists()
 
     def test_retry_after_staging_backup_restores_stranded_config(
         self, extension_dir, project_dir, monkeypatch
@@ -3131,7 +3255,7 @@ class TestExtensionManager:
         Regression test for #4555: a primary name is namespace-checked
         against CORE_COMMAND_NAMES, but aliases are intentionally free-form
         and previously went unchecked against core commands entirely, so an
-        extension could claim e.g. 'speckit.taskstoissues' as an alias and
+        extension could claim e.g. 'speckit.tasks' as an alias and
         shadow the core command of the same name.
         """
         import yaml
@@ -3152,9 +3276,9 @@ class TestExtensionManager:
             "provides": {
                 "commands": [
                     {
-                        "name": "speckit.probe.taskstoissues",
+                        "name": "speckit.probe.tasks",
                         "file": "commands/cmd.md",
-                        "aliases": ["speckit.taskstoissues"],
+                        "aliases": ["speckit.tasks"],
                     }
                 ]
             },
@@ -3167,7 +3291,7 @@ class TestExtensionManager:
         with pytest.raises(ValidationError, match="conflicts with core command"):
             manager.install_from_directory(ext_dir, "0.1.0", register_commands=False)
 
-    @pytest.mark.parametrize("alias", ["taskstoissues", "speckit-taskstoissues"])
+    @pytest.mark.parametrize("alias", ["tasks", "speckit-tasks"])
     def test_install_rejects_equivalent_alias_shadowing_core_command(
         self, temp_dir, project_dir, alias
     ):
@@ -3175,8 +3299,8 @@ class TestExtensionManager:
 
         Regression test for the reviewer follow-up on #4555: agent-specific
         name transformation (``CommandRegistrar._compute_output_name`` and the
-        Cline/Forge/Junie formatters) collapses ``speckit.taskstoissues``,
-        ``taskstoissues``, and ``speckit-taskstoissues`` to the same on-disk
+        Cline/Forge/Junie formatters) collapses ``speckit.tasks``,
+        ``tasks``, and ``speckit-tasks`` to the same on-disk
         command name, so all three spellings must be rejected, not just the
         exact dotted one.
         """
@@ -3198,7 +3322,7 @@ class TestExtensionManager:
             "provides": {
                 "commands": [
                     {
-                        "name": "speckit.probe.taskstoissues",
+                        "name": "speckit.probe.tasks",
                         "file": "commands/cmd.md",
                         "aliases": [alias],
                     }
@@ -6329,6 +6453,42 @@ class TestExtensionCatalog:
         # silently dropped rather than raising or crashing.
         assert [ext["id"] for ext in merged] == ["good"]
 
+    @pytest.mark.parametrize("bad_body", [b"\xff", b"not json"])
+    def test_merged_extensions_skips_invalid_catalog_response(
+        self, temp_dir, capsys, bad_body
+    ):
+        """A broken source must not hide extensions from a healthy source."""
+        from unittest.mock import patch
+
+        catalog = self._make_catalog(temp_dir)
+        bad = CatalogEntry("https://example.com/bad.json", "bad", 1, True)
+        good = CatalogEntry("https://example.com/good.json", "good", 2, True)
+        good_body = json.dumps({
+            "schema_version": "1.0",
+            "extensions": {"healthy": {"name": "Healthy", "version": "1.0.0"}},
+        }).encode()
+
+        def open_catalog(url, **_kwargs):
+            response = MagicMock()
+            body = bad_body if url == bad.url else good_body
+            response.read.side_effect = io.BytesIO(body).read
+            response.geturl.return_value = url
+            response.__enter__.return_value = response
+            return response
+
+        with patch.object(catalog, "get_active_catalogs", return_value=[bad, good]), \
+             patch.object(catalog, "_open_url", side_effect=open_catalog):
+            merged = catalog._get_merged_extensions(force_refresh=True)
+
+        assert [ext["id"] for ext in merged] == ["healthy"]
+        assert merged[0]["_catalog_name"] == "good"
+        assert "Could not fetch catalog 'bad'" in capsys.readouterr().err
+
+        with patch.object(catalog, "get_active_catalogs", return_value=[bad]), \
+             patch.object(catalog, "_open_url", side_effect=open_catalog), \
+             pytest.raises(ExtensionError, match="Failed to fetch any extension catalog"):
+            catalog._get_merged_extensions(force_refresh=True)
+
     def test_download_extension_sends_auth_header(self, temp_dir, monkeypatch):
         """download_extension passes Authorization header when a provider is configured."""
         from unittest.mock import patch, MagicMock
@@ -6876,8 +7036,8 @@ class TestCatalogStack:
         result = catalog._load_catalog_config(project_dir / ".specify" / "nonexistent.yml")
         assert result is None
 
-    def test_load_catalog_config_localhost_allowed(self, temp_dir):
-        """Localhost HTTP URLs are allowed in config."""
+    def test_load_catalog_config_localhost_rejected(self, temp_dir):
+        """Localhost HTTP URLs are rejected before fetching."""
         project_dir = self._make_project(temp_dir)
         self._write_catalog_config(
             project_dir,
@@ -6892,10 +7052,8 @@ class TestCatalogStack:
         )
 
         catalog = ExtensionCatalog(project_dir)
-        entries = catalog.get_active_catalogs()
-
-        assert len(entries) == 1
-        assert entries[0].url == "http://localhost:8000/catalog.json"
+        with pytest.raises(ValidationError, match="HTTPS"):
+            catalog.get_active_catalogs()
 
     @pytest.mark.parametrize(
         "config_content", ["[]\n", "false\n", "0\n", "''\n", "- item\n"]
@@ -7189,6 +7347,21 @@ class TestCatalogStack:
 
 class TestExtensionIgnore:
     """Test .extensionignore support during extension installation."""
+
+    @pytest.mark.parametrize("excluded", ["extension.yml", "commands/hello.md"])
+    def test_declared_files_are_not_exempt(self, temp_dir, valid_manifest_data, excluded):
+        """Filtering does not implicitly protect manifests or declared command files."""
+        ext_dir = self._make_extension(
+            temp_dir, valid_manifest_data, ignore_content=excluded + "\n"
+        )
+        project = temp_dir / "project"
+        (project / ".specify").mkdir(parents=True)
+        manager = ExtensionManager(project)
+
+        manifest = manager.install_from_directory(ext_dir, "0.1.0", register_commands=False)
+
+        assert manager.registry.is_installed(manifest.id)
+        assert not (project / ".specify/extensions" / manifest.id / excluded).exists()
 
     def _make_extension(self, temp_dir, valid_manifest_data, extra_files=None, ignore_content=None):
         """Helper to create an extension directory with optional extra files and .extensionignore."""
@@ -8739,6 +8912,83 @@ class TestConfigManagerNonMappingManifestConfigSection:
         assert executor._evaluate_condition("config.x is set", "jira") is False
 
 
+class TestConfigManagerTopLevelManifestDefaults:
+    """A top-level `defaults:` in extension.yml must be loaded (#5084).
+
+    The extension template and docs/extensions/api.md put defaults under a
+    top-level ``defaults:`` key, but ``_get_extension_defaults`` only read
+    ``config.defaults``, so an extension built from the template silently had
+    no defaults at runtime.
+    """
+
+    def _make(self, tmp_path, manifest_body: str):
+        ext_dir = tmp_path / ".specify" / "extensions" / "myext"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "extension.yml").write_text(manifest_body, encoding="utf-8")
+        return ConfigManager(tmp_path, "myext")
+
+    def test_top_level_defaults_load(self, tmp_path):
+        cm = self._make(tmp_path, "defaults:\n  feature:\n    enabled: true\n")
+        assert cm.get_config() == {"feature": {"enabled": True}}
+
+    def test_shipped_template_defaults_load(self, tmp_path):
+        """The defaults in extensions/template/extension.yml reach get_config()."""
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "extensions" / "template" / "extension.yml"
+        ).read_text(encoding="utf-8")
+        expected = yaml.safe_load(template)["defaults"]
+        assert expected, "template no longer ships example defaults"
+        cm = self._make(tmp_path, template)
+        assert cm.get_config() == expected
+
+    def test_config_defaults_win_on_conflict(self, tmp_path):
+        cm = self._make(
+            tmp_path,
+            "defaults:\n  feature:\n    enabled: true\n    auto_sync: true\n"
+            "config:\n  defaults:\n    feature:\n      auto_sync: false\n",
+        )
+        assert cm.get_config() == {"feature": {"enabled": True, "auto_sync": False}}
+
+    def test_project_config_merges_over_top_level_defaults(self, tmp_path):
+        cm = self._make(
+            tmp_path, "defaults:\n  feature:\n    enabled: true\n    auto_sync: true\n"
+        )
+        (cm.extension_dir / "myext-config.yml").write_text(
+            "feature:\n  enabled: false\n", encoding="utf-8"
+        )
+        assert cm.get_config() == {"feature": {"enabled": False, "auto_sync": True}}
+
+    def test_non_mapping_top_level_defaults_is_ignored(self, tmp_path):
+        cm = self._make(
+            tmp_path,
+            "defaults:\n  - foo\nconfig:\n  defaults:\n    feature:\n      enabled: true\n",
+        )
+        assert cm.get_config() == {"feature": {"enabled": True}}
+
+    @pytest.mark.parametrize(
+        "config_section",
+        [
+            "config:\n  - foo\n",
+            "config: just-a-string\n",
+            "config:\n  defaults:\n    - foo\n",
+            "config:\n  defaults: just-a-string\n",
+        ],
+        ids=["list-config", "scalar-config", "list-defaults", "scalar-defaults"],
+    )
+    def test_top_level_defaults_survive_non_mapping_config(self, tmp_path, config_section):
+        """A malformed `config` or `config.defaults` must not drop valid top-level defaults."""
+        cm = self._make(
+            tmp_path, "defaults:\n  feature:\n    enabled: true\n" + config_section
+        )
+        assert cm.get_config() == {"feature": {"enabled": True}}
+
+    def test_hook_condition_sees_top_level_default(self, tmp_path):
+        self._make(tmp_path, "defaults:\n  feature:\n    enabled: true\n")
+        executor = HookExecutor(tmp_path)
+        assert executor._evaluate_condition("config.feature.enabled is set", "myext") is True
+
+
 class TestConfigManagerEnvPrefixCollision:
     """Prefix-colliding env vars must not crash or clobber nested config."""
 
@@ -9233,3 +9483,24 @@ class TestExtensionConfigScaffolding:
 
         assert deployed == ["test-config.local.yml"]
         assert failed == []
+
+
+def test_ensure_executable_scripts_only_selected_files(tmp_path, monkeypatch):
+    import os
+    from specify_cli import ensure_executable_scripts
+
+    if os.name == "nt":
+        pytest.skip("POSIX permissions required")
+    selected = tmp_path / "selected.sh"
+    other = tmp_path / "other.sh"
+    nonshebang = tmp_path / "nonshebang.sh"
+    for path in (selected, other, nonshebang):
+        path.write_text("echo ok\n" if path == nonshebang else "#!/bin/sh\necho ok\n")
+        path.chmod(0o600)
+    ensure_executable_scripts(tmp_path, files=[selected, nonshebang])
+    assert selected.stat().st_mode & 0o100
+    assert not other.stat().st_mode & 0o111
+    assert not nonshebang.stat().st_mode & 0o111
+    monkeypatch.setattr("specify_cli.os.name", "nt")
+    ensure_executable_scripts(tmp_path, files=[other])
+    assert not other.stat().st_mode & 0o111

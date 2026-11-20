@@ -96,6 +96,7 @@ def _register_builtins() -> None:
     from .lingma import LingmaIntegration
     from .mcode import McodeIntegration
     from .muse import MuseIntegration
+    from .none import NoneIntegration
     from .omp import OmpIntegration
     from .opencode import OpencodeIntegration
     from .pi import PiIntegration
@@ -140,6 +141,7 @@ def _register_builtins() -> None:
     _register(LingmaIntegration())
     _register(McodeIntegration())
     _register(MuseIntegration())
+    _register(NoneIntegration())
     _register(OmpIntegration())
     _register(OpencodeIntegration())
     _register(PiIntegration())
@@ -355,7 +357,12 @@ class IntegrationCatalog(CatalogStackBase):
         try:
             from specify_cli.authentication.http import open_url
 
-            with open_url(entry.url, timeout=10) as resp:
+            def _validate_redirect(_old_url: str, new_url: str) -> None:
+                self._validate_catalog_url(new_url)
+
+            with open_url(
+                entry.url, timeout=10, redirect_validator=_validate_redirect
+            ) as resp:
                 # Validate final URL after redirects
                 final_url = resp.geturl()
                 if final_url != entry.url:

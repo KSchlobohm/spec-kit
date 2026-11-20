@@ -470,7 +470,6 @@ class TomlIntegrationTests:
         "checklist",
         "specify",
         "tasks",
-        "taskstoissues",
     ]
 
     def _expected_files(self, script_variant: str) -> list[str]:
@@ -495,6 +494,7 @@ class TomlIntegrationTests:
                 "check-prerequisites.sh",
                 "common.sh",
                 "create-new-feature.sh",
+                "markdown_sections.py",
                 "resolve-template.sh",
                 "setup-plan.sh",
                 "setup-tasks.sh",
@@ -505,6 +505,7 @@ class TomlIntegrationTests:
                 "check-prerequisites.ps1",
                 "common.ps1",
                 "create-new-feature.ps1",
+                "markdown_sections.py",
                 "resolve-template.ps1",
                 "setup-plan.ps1",
                 "setup-tasks.ps1",

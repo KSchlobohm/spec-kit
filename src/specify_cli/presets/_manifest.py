@@ -10,6 +10,7 @@ import yaml
 from packaging import version as pkg_version
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
+from ..markdown_sections import validate_section_selector
 
 class PresetError(Exception):
     """Base exception for preset-related errors."""
@@ -21,13 +22,17 @@ class PresetValidationError(PresetError):
     pass
 
 
+class PresetSectionValidationError(PresetValidationError):
+    """Section declarations must never fall back to whole-file replacement."""
+
+
 class PresetCompatibilityError(PresetError):
     """Raised when preset is incompatible with current environment."""
     pass
 
 
 VALID_PRESET_TEMPLATE_TYPES = {"template", "command", "script"}
-VALID_PRESET_STRATEGIES = {"replace", "prepend", "append", "wrap"}
+VALID_PRESET_STRATEGIES = {"replace", "prepend", "append", "wrap", "replace-section"}
 # Scripts only support replace and wrap (prepend/append don't make semantic sense for executable code)
 VALID_SCRIPT_STRATEGIES = {"replace", "wrap"}
 
@@ -49,7 +54,24 @@ class PresetManifest:
         """
         self.path = manifest_path
         self.data = self._load_yaml(manifest_path)
-        self._validate()
+        provides = self.data.get("provides")
+        entries = provides.get("templates") if isinstance(provides, dict) else None
+        section_metadata = isinstance(entries, list) and any(
+            isinstance(entry, dict) and (
+                "selector" in entry
+                or (
+                    isinstance(entry.get("strategy"), str)
+                    and entry["strategy"].lower() == "replace-section"
+                )
+            )
+            for entry in entries
+        )
+        try:
+            self._validate()
+        except PresetValidationError as exc:
+            if section_metadata:
+                raise PresetSectionValidationError(str(exc)) from exc
+            raise
 
     def _load_yaml(self, path: Path) -> dict:
         """Load YAML file safely."""
@@ -97,7 +119,7 @@ class PresetManifest:
         # Validate preset metadata
         pack = self.data["preset"]
         # Check presence AND type: the format/version checks below feed these
-        # values straight to ``re.match`` and ``packaging.Version``, both of
+        # values straight to ``re.fullmatch`` and ``packaging.Version``, both of
         # which raise a bare TypeError on a non-string. YAML makes that an easy
         # authoring slip -- unquoted ``version: 1.0`` parses as a float and
         # ``id: 2`` as an int -- and TypeError is not a PresetValidationError,
@@ -117,7 +139,7 @@ class PresetManifest:
                 )
 
         # Validate pack ID format
-        if not re.match(r'^[a-z0-9-]+$', pack["id"]):
+        if not re.fullmatch(r'[a-z0-9-]+', pack["id"]):
             raise PresetValidationError(
                 f"Invalid preset ID '{pack['id']}': "
                 "must be lowercase alphanumeric with hyphens only"
@@ -263,6 +285,14 @@ class PresetManifest:
                     f"Invalid strategy '{strategy}' for script: "
                     f"scripts only support {sorted(VALID_SCRIPT_STRATEGIES)}"
                 )
+            try:
+                validate_section_selector(
+                    strategy, tmpl.get("selector"), present="selector" in tmpl
+                )
+            except ValueError as exc:
+                raise PresetValidationError(
+                    f"Invalid template '{tmpl['name']}' in {self.path}: {exc}"
+                ) from exc
 
             # Validate template name format
             if tmpl["type"] == "command":

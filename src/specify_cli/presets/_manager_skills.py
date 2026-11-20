@@ -2,7 +2,6 @@
 
 import copy
 import os
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
@@ -216,7 +215,7 @@ class _PresetSkillMethods:
                 managed_skill_names if managed_names is None else managed_names
             )
             # Restore skills for commands whose winner is non-preset.
-            # _unregister_skills_in_dir can rmtree the skill dir, so
+            # _unregister_skills_in_dir can remove the skill file, so
             # overrides must be handled directly (create dir + write)
             # without that call.
             dir_core_ext_names = [
@@ -608,8 +607,10 @@ class _PresetSkillMethods:
                     "source_file": source_file,
                     "source": f"extension:{manifest.id}",
                     "author": manifest.data["extension"].get("author"),
+                    "version": manifest.version,
                     "extension_id": manifest.id,
                     "extension_dir": ext_root,
+                    "resources": cmd_info.get("resources", []),
                 }
                 modern_skill_name, legacy_skill_name = self._skill_names_for_command(cmd_name)
                 restore_index.setdefault(modern_skill_name, restore_info)
@@ -803,6 +804,7 @@ class _PresetSkillMethods:
                     target_skill_name,
                     enhanced_desc,
                     f"preset:{manifest.id}",
+                    version=manifest.version,
                 )
                 registrar.apply_argument_hint(frontmatter, frontmatter_data, integration)
                 frontmatter_text = dump_frontmatter(frontmatter_data)
@@ -1275,11 +1277,12 @@ class _PresetSkillMethods:
             if override_source:
                 owned_sources.add(override_source)
             if source in owned_sources:
-                from ..integrations._file_changes import after_file_change, before_file_change
+                from ..integrations._file_changes import unlink_in_directory
 
-                before_file_change(skill_subdir, removal=True)
-                shutil.rmtree(skill_subdir)
-                after_file_change(skill_subdir)
+                unlink_in_directory(
+                    skill_file,
+                    root=self.project_root if skill_file.is_relative_to(self.project_root) else skills_dir,
+                )
 
     @staticmethod
     def _warn_unrestored_skill(
@@ -1302,6 +1305,29 @@ class _PresetSkillMethods:
             f"({exc.__class__.__name__}: {exc}). The skill was left in place "
             f"rather than deleted. Fix or remove that file and re-run "
             f"'specify preset add'/'specify preset remove' to refresh it.",
+            stacklevel=2,
+        )
+
+    @staticmethod
+    def _warn_unrestored_skill_resources(
+        skill_name: str, extension_dir: Path, exc: BaseException
+    ) -> None:
+        """Warn that a skill kept preset content because its resources are unresolved.
+
+        The command file itself was read; the extension's declared ``resources``
+        no longer resolve. As for an unreadable source, leaving the skill in
+        place is the safe recovery, so say what is wrong and where to fix it.
+        """
+        import warnings
+
+        warnings.warn(
+            f"Skill '{skill_name}' still contains the removed preset's content: "
+            f"the resources declared by its extension command could not be "
+            f"resolved in '{extension_dir}' ({exc.__class__.__name__}: {exc}). "
+            f"The skill was left in place rather than deleted. Restore the "
+            f"missing resource in that extension or fix its 'resources' in "
+            f"extension.yml, then re-run 'specify preset add'/'specify preset "
+            f"remove' to refresh it.",
             stacklevel=2,
         )
 
@@ -1330,7 +1356,7 @@ class _PresetSkillMethods:
         Returns:
             Skill names whose files were restored or removed.
         """
-        from .. import SKILL_DESCRIPTIONS
+        from .. import SKILL_DESCRIPTIONS, get_speckit_version
         from ..integrations import get_integration
         from ..shared_infra import _write_shared_text
 
@@ -1370,7 +1396,7 @@ class _PresetSkillMethods:
             # is_dir() follows symlinks, so a symlinked skill subdirectory
             # (with a safe, non-symlinked parent) would otherwise slip past
             # _safe_skills_dir_for_agent's parent-only check and have
-            # write_text/rmtree operate through it (#2948).
+            # writes/removals operate through it (#2948).
             if not self._validate_skill_subdir(
                 skill_subdir, create=False, skills_root=skills_dir
             ):
@@ -1435,7 +1461,7 @@ class _PresetSkillMethods:
                 # source cannot produce restored content, so leave the
                 # existing skill untouched rather than leaking a raw
                 # OSError/UnicodeDecodeError out of `preset remove` — and
-                # rather than falling through to the rmtree below, which
+                # rather than falling through to the removal below, which
                 # would delete a skill precisely when its replacement
                 # cannot be generated. Matches the `continue` guards above
                 # (unsafe name, missing subdir, foreign owner), which also
@@ -1465,6 +1491,7 @@ class _PresetSkillMethods:
                     skill_name,
                     enhanced_desc,
                     f"templates/commands/{short_name}.md",
+                    version=get_speckit_version(),
                 )
                 registrar.apply_argument_hint(frontmatter, frontmatter_data, integration)
                 frontmatter_text = dump_frontmatter(frontmatter_data)
@@ -1496,20 +1523,30 @@ class _PresetSkillMethods:
                     )
                     continue
                 frontmatter, body = registrar.parse_frontmatter(content)
-                # Mirror the register-time rewrite (#2101): resolve
-                # extension-relative subdir references (agents/,
-                # knowledge-base/, etc.) to their installed location before
-                # the generic placeholder resolution below, otherwise
-                # restoring after a preset override removal would leave
-                # bare, unresolvable paths in the skill body.
-                body = registrar.rewrite_extension_paths(
-                    body,
-                    extension_restore["extension_id"],
-                    extension_restore["extension_dir"],
-                )
+                resources = extension_restore.get("resources", [])
+                resolved_resources = []
+                if resources:
+                    from ..extensions import ValidationError
+                    from ..extensions._skill_resources import resolve_skill_resources
+
+                    try:
+                        resolved_resources = resolve_skill_resources(
+                            extension_restore["extension_dir"], resources
+                        )
+                    except ValidationError as exc:
+                        self._warn_unrestored_skill_resources(
+                            skill_name, extension_restore["extension_dir"], exc
+                        )
+                        continue
+                else:
+                    body = registrar.rewrite_extension_paths(
+                        body, extension_restore["extension_id"],
+                        extension_restore["extension_dir"],
+                    )
                 if isinstance(selected_ai, str):
                     body = registrar.resolve_skill_placeholders(
-                        selected_ai, frontmatter, body, self.project_root
+                        selected_ai, frontmatter, body, self.project_root,
+                        rewrite_paths=not bool(resources),
                     )
                     body = self._resolve_skill_command_refs(
                         body, registrar, selected_ai, self.project_root
@@ -1524,6 +1561,7 @@ class _PresetSkillMethods:
                     frontmatter.get("description", f"Extension command: {command_name}"),
                     extension_restore["source"],
                     author=extension_restore.get("author", "github-spec-kit"),
+                    version=extension_restore.get("version"),
                 )
                 registrar.apply_argument_hint(frontmatter, frontmatter_data, integration)
                 frontmatter_text = dump_frontmatter(frontmatter_data)
@@ -1539,14 +1577,33 @@ class _PresetSkillMethods:
                         skill_content
                     )
                 _write_shared_text(skills_dir, skill_file, skill_content)
+                if resources:
+                    import copy
+                    from ..extensions import ExtensionRegistry
+                    from ..extensions._skill_resources import (
+                        deliver_skill_resources, recorded_resource_hashes,
+                    )
+
+                    registry = ExtensionRegistry(self.project_root / ".specify" / "extensions")
+                    ext_id = extension_restore["extension_id"]
+                    metadata = registry.get(ext_id)
+                    previous = recorded_resource_hashes(metadata)
+                    hashes = copy.deepcopy(previous)
+                    deliver_skill_resources(
+                        self.project_root, ext_id, skills_dir, skill_name,
+                        extension_restore["extension_dir"], resolved_resources, previous, hashes,
+                    )
+                    if metadata is not None and hashes != previous:
+                        registry.update(ext_id, {"skill_resource_hashes": hashes})
                 mutated_names.append(skill_name)
             else:
-                # No core or extension template — remove the skill entirely
-                from ..integrations._file_changes import after_file_change, before_file_change
+                # No core or extension template — remove only the generated file
+                from ..integrations._file_changes import unlink_in_directory
 
-                before_file_change(skill_subdir, removal=True)
-                shutil.rmtree(skill_subdir)
-                after_file_change(skill_subdir)
+                unlink_in_directory(
+                    skill_file,
+                    root=self.project_root if skill_file.is_relative_to(self.project_root) else skills_dir,
+                )
                 mutated_names.append(skill_name)
 
         return mutated_names

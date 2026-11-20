@@ -17,6 +17,109 @@ from tests.specify_cli.presets._helpers import (
     CORE_TEMPLATE_NAMES,
     install_self_test_preset,
 )
+from tests.parity_helpers import install_section_stack
+
+
+@pytest.mark.parametrize("kind", ["template", "command"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_section_replacement_preserves_raw_document(tmp_path, kind, newline):
+    base = "---\ndescription: 'Keep exact quoting'\n---\n\n# Doc\n## Target\nold\n### Child\nnested\n## Next\nupstream"
+    base = base.replace("\n", newline)
+    name, _ = install_section_stack(tmp_path, base, "new\n", kind=kind)
+    expected = base[:base.index("old")] + "new\n" + base[base.index("## Next"):]
+    assert PresetResolver(tmp_path).resolve_content(name, kind) == expected
+
+
+@pytest.mark.parametrize(
+    "content,code,count",
+    [("# Missing\n", "SECTION_NOT_FOUND", 0), ("## Target\n## TARGET!\n", "SECTION_AMBIGUOUS", 2)],
+)
+def test_section_replacement_selection_errors(tmp_path, content, code, count):
+    name, body = install_section_stack(tmp_path, content, "")
+    with pytest.raises(PresetValidationError) as caught:
+        PresetResolver(tmp_path).resolve_content(name)
+    details = json.loads(str(caught.value))
+    assert details["code"] == code
+    assert details["match_count"] == count
+    assert details["contribution"] == str(body)
+    assert details["preset"] == "team"
+
+
+def test_section_invalid_declaration_cannot_fall_back_to_whole_file(tmp_path):
+    name, _ = install_section_stack(tmp_path, "## Target\nold\n", "wrong full file", selector=None)
+    with pytest.raises(PresetValidationError, match="selector"):
+        PresetResolver(tmp_path).resolve_content(name)
+
+
+def test_section_without_base_fails_explicitly(tmp_path):
+    name, _ = install_section_stack(tmp_path, "## Target\nold\n", "new\n")
+    (tmp_path / ".specify/templates" / f"{name}.md").unlink()
+    with pytest.raises(PresetValidationError, match="no replace base"):
+        PresetResolver(tmp_path).resolve_content(name)
+
+
+@pytest.mark.parametrize("unreadable", ["body", "base"])
+def test_section_unreadable_input_fails_explicitly(tmp_path, unreadable):
+    name, body = install_section_stack(tmp_path, "## Target\nold\n", "new\n")
+    path = body if unreadable == "body" else tmp_path / ".specify/templates" / f"{name}.md"
+    path.write_bytes(b"\xff")
+    with pytest.raises(PresetValidationError, match="Could not read"):
+        PresetResolver(tmp_path).resolve_content(name)
+
+
+@pytest.mark.parametrize("field", ["file", "name", "type", "version", "schema_version"])
+def test_invalid_section_manifest_never_uses_convention_fallback(tmp_path, field):
+    name, body = install_section_stack(tmp_path, "## Target\nold\n", "new\n")
+    manifest_path = body.parent / "preset.yml"
+    data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    if field == "version":
+        data["preset"][field] = 5
+    elif field == "schema_version":
+        data[field] = "invalid"
+    else:
+        data["provides"]["templates"][0][field] = 5
+    manifest_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    conventional = body.parent / "templates" / f"{name}.md"
+    conventional.parent.mkdir()
+    conventional.write_text("Wrong full-file fallback\n", encoding="utf-8")
+    with pytest.raises(PresetValidationError):
+        PresetResolver(tmp_path).resolve_content(name)
+
+
+@pytest.mark.parametrize("kind", ["template", "command"])
+@pytest.mark.parametrize("winner", ["override", "preset", "wrapped-preset"])
+def test_hidden_invalid_section_presets_do_not_block_replace(tmp_path, kind, winner):
+    name, body = install_section_stack(
+        tmp_path, "## Target\nold\n", "invalid lower contribution\n", selector=None, kind=kind,
+    )
+    expected = "# Winning replacement\n"
+    presets = body.parent.parent
+    data = yaml.safe_load((body.parent / "preset.yml").read_text(encoding="utf-8"))
+    registry = PresetRegistry(presets)
+    registry.add("team", {"priority": 20, "enabled": True})
+    if winner == "override":
+        override = tmp_path / ".specify/templates/overrides" / f"{name}.md"
+        override.parent.mkdir()
+        override.write_bytes(expected.encode("utf-8"))
+    else:
+        for preset_id, priority, strategy, content in [
+            ("winner", 10, "replace", expected),
+            *([("outer", 5, "wrap", "before\n{CORE_TEMPLATE}\nafter")] if winner == "wrapped-preset" else []),
+        ]:
+            directory = presets / preset_id
+            directory.mkdir()
+            manifest = json.loads(json.dumps(data))
+            manifest["preset"]["id"] = preset_id
+            entry = manifest["provides"]["templates"][0]
+            entry["strategy"] = strategy
+            del entry["selector"]
+            (directory / "preset.yml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+            (directory / "body.md").write_bytes(content.encode("utf-8"))
+            registry.add(preset_id, {"priority": priority, "enabled": True})
+        if winner == "wrapped-preset":
+            expected = f"before\n{expected}\nafter"
+    resolver = PresetResolver(tmp_path)
+    assert resolver.resolve_content(name, kind) == expected
 
 
 class TestPresetResolver:
@@ -467,6 +570,15 @@ class TestPresetResolver:
         assert result is not None
         assert result["source"] == "core"
         assert "spec-template.md" in result["path"]
+
+    def test_resolve_with_source_core_name_starting_with_overrides(self, project_dir):
+        """A core filename sharing the overrides prefix is still core."""
+        core = project_dir / ".specify" / "templates" / "overrides-report.md"
+        core.write_text("# Core report\n")
+
+        result = PresetResolver(project_dir).resolve_with_source("overrides-report")
+
+        assert result == {"path": str(core), "source": "core"}
 
     def test_resolve_with_source_override(self, project_dir):
         """Test resolve_with_source for override template."""
@@ -1095,6 +1207,53 @@ class TestResolveContent:
         resolver = PresetResolver(project_dir)
         content = resolver.resolve_content("nonexistent")
         assert content is None
+
+    def test_resolve_content_non_mapping_command_frontmatter(
+        self, project_dir, temp_dir, valid_pack_data
+    ):
+        """Valid YAML that is not a mapping must not crash composition.
+
+        ``_parse_fm_yaml`` returned whatever ``yaml.safe_load`` produced, and the
+        caller then called ``.pop`` on it, so ``preset add`` surfaced a raw
+        ``AttributeError``. ``CommandRegistrar.parse_frontmatter`` already treats
+        a non-dict result as ``{}``; the resolver now agrees.
+        """
+        pack_data = {**valid_pack_data}
+        pack_data["preset"] = {
+            **valid_pack_data["preset"],
+            "id": "odd-frontmatter-pack",
+            "name": "Odd Frontmatter",
+        }
+        pack_data["provides"] = {
+            "templates": [
+                {
+                    "type": "command",
+                    "name": "speckit.demo",
+                    "file": "commands/speckit.demo.md",
+                    "strategy": "append",
+                }
+            ]
+        }
+        pack_dir = temp_dir / "odd-frontmatter-pack"
+        pack_dir.mkdir()
+        with open(pack_dir / "preset.yml", "w") as f:
+            yaml.dump(pack_data, f)
+        (pack_dir / "commands").mkdir()
+        (pack_dir / "commands" / "speckit.demo.md").write_text(
+            "---\njust a note\n---\nAPPENDED\n", encoding="utf-8"
+        )
+        core_command = project_dir / ".specify" / "templates" / "commands" / "speckit.demo.md"
+        core_command.parent.mkdir(parents=True, exist_ok=True)
+        core_command.write_text("---\ndescription: core\n---\nCORE BODY\n", encoding="utf-8")
+
+        PresetManager(project_dir).install_from_directory(pack_dir, "0.1.5")
+
+        content = PresetResolver(project_dir).resolve_content("speckit.demo", "command")
+
+        assert content is not None
+        assert "CORE BODY" in content
+        assert "APPENDED" in content
+        assert "just a note" not in content
 
     def test_resolve_content_unreadable_winning_layer_returns_none(self, project_dir):
         """An undecodable winning layer must yield None, not a raw traceback.

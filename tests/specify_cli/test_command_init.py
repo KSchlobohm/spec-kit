@@ -16,9 +16,12 @@ escapes user-controlled display values; init.py was the outlier.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -28,8 +31,26 @@ from typer.testing import CliRunner
 from specify_cli import app
 from specify_cli.command_init import _shell_quote_arg
 from tests.conftest import requires_bash
+from tests.specify_cli.integrations._helpers import _symlink_or_skip, _tree
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home(monkeypatch, tmp_path_factory):
+    """Keep init's home-scoped output (Hermes' ~/.hermes/skills) out of the real home."""
+    # Outside tmp_path, which several tests initialize with --here.
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    return home
+
+
+def test_init_tests_use_a_temporary_home(_isolate_home):
+    assert Path.home() == _isolate_home
 
 
 def test_command_init_importable():
@@ -91,6 +112,34 @@ def _init(tmp_path: Path, name: str):
         )
     finally:
         os.chdir(previous)
+
+
+@pytest.mark.parametrize("numbering", ["timestamp", "sequential", None])
+def test_reinit_preserves_feature_numbering(tmp_path: Path, monkeypatch, numbering):
+    result = _init(tmp_path, "proj")
+    assert result.exit_code == 0, _strip(result.stdout)
+    project = tmp_path / "proj"
+    options_path = project / ".specify" / "init-options.json"
+    options = json.loads(options_path.read_text(encoding="utf-8"))
+    assert options["feature_numbering"] == "sequential"
+    if numbering is None:
+        options.pop("feature_numbering")
+    else:
+        options["feature_numbering"] = numbering
+    options["custom_setting"] = "keep me"
+    options_path.write_text(json.dumps(options), encoding="utf-8")
+
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, [
+        "init", "--here", "--force", "--integration", "generic",
+        "--integration-options", "--commands-dir .agent/commands",
+        "--script", "sh", "--non-interactive", "--ignore-agent-tools", "--offline",
+    ])
+    assert result.exit_code == 0, _strip(result.stdout)
+    updated = json.loads(options_path.read_text(encoding="utf-8"))
+    assert updated["feature_numbering"] == (numbering or "sequential")
+    assert updated["custom_setting"] == "keep me"
+    assert updated["here"] is True
 
 
 @pytest.mark.parametrize("name", ["proj [v2]", "my[bold]app"])
@@ -209,3 +258,405 @@ def test_shell_quote_arg_is_host_appropriate():
         assert quoted == '"my project"'
     else:
         assert quoted == "'my project'"
+
+
+@pytest.mark.parametrize("here", [False, True])
+def test_output_free_init_recommends_switching_integrations(tmp_path, monkeypatch, here):
+    from specify_cli.integrations.generic import GenericIntegration
+
+    monkeypatch.setattr(GenericIntegration, "list_command_templates", lambda self: [])
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        app,
+        [
+            "init", *(["--here"] if here else ["proj"]),
+            "--integration", "generic",
+            "--integration-options", "--commands-dir .agent/commands",
+            "--ignore-agent-tools",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    output = _strip(result.output)
+    assert "Next Steps" in output
+    if here:
+        assert "You're already in the project directory!" in output
+    else:
+        assert "cd proj" in output
+    assert "specify integration switch <key>" in output
+    assert "Switch this project to it:" in output
+    assert "Add it to this project:" not in output
+    assert "specify integration list" in output
+    assert "Start using" not in output
+    assert "speckit." not in output
+    assert "Enhancement Commands" not in output
+    assert "Enhancement Skills" not in output
+    project = tmp_path if here else tmp_path / "proj"
+    assert not (project / ".agent" / "commands").exists()
+
+
+def test_rendering_init_preserves_command_guidance(tmp_path):
+    result = _init(tmp_path, "proj")
+    assert result.exit_code == 0, result.output
+    output = _strip(result.output)
+    assert "Start using slash commands" in output
+    for command in ("constitution", "specify", "plan", "tasks", "implement", "converge",
+                    "clarify", "analyze", "checklist"):
+        assert f"/speckit.{command}" in output
+        assert (tmp_path / "proj" / ".agent" / "commands" / f"speckit.{command}.md").is_file()
+    assert "Enhancement Commands" in output
+    assert "specify integration switch <key>" not in output
+
+
+def test_rendering_init_preserves_skill_guidance(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        app, ["init", "proj", "--integration", "copilot", "--ignore-agent-tools"],
+    )
+    assert result.exit_code == 0, result.output
+    output = _strip(result.output)
+    assert "Start using skills" in output
+    assert "Enhancement Skills" in output
+    assert "specify integration switch <key>" not in output
+    for command in ("constitution", "specify", "plan", "tasks", "implement", "converge",
+                    "clarify", "analyze", "checklist"):
+        assert f"/speckit-{command}" in output
+        assert (tmp_path / "proj" / ".github" / "skills" / f"speckit-{command}" / "SKILL.md").is_file()
+
+
+def test_init_force_syncs_manifest_hash_for_preset_override(tmp_path, monkeypatch):
+    """Re-init must record preset bytes and retain setup's other files (#5078)."""
+    from specify_cli.integrations.manifest import IntegrationManifest
+
+    monkeypatch.chdir(tmp_path)
+    args = ["--integration", "codex", "--script", "sh", "--ignore-agent-tools", "--non-interactive"]
+    result = CliRunner().invoke(app, ["init", "proj", *args])
+    assert result.exit_code == 0, result.output
+    project = tmp_path / "proj"
+    preset = tmp_path / "tasks-preset"
+    (preset / "commands").mkdir(parents=True)
+    (preset / "commands/speckit.tasks.md").write_bytes(
+        b"---\ndescription: Tasks override\n---\nPreset tasks body\n"
+    )
+    (preset / "preset.yml").write_bytes(b"""schema_version: '1.0'
+preset: {id: tasks-preset, name: Tasks Preset, version: 1.0.0, description: x}
+requires: {speckit_version: '>=0.1.0'}
+provides:
+  templates:
+  - {type: command, name: speckit.tasks, file: commands/speckit.tasks.md}
+""")
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, ["preset", "add", "--dev", str(preset)])
+    assert result.exit_code == 0, result.output
+    plan_rel = ".agents/skills/speckit-plan/SKILL.md"
+    original_plan = (project / plan_rel).read_bytes()
+    (project / plan_rel).write_bytes(b"User-edited skill\n")
+
+    result = CliRunner().invoke(app, ["init", "--here", "--force", *args])
+    assert result.exit_code == 0, result.output
+
+    manifest = IntegrationManifest.load("codex", project)
+    rel = ".agents/skills/speckit-tasks/SKILL.md"
+    content = (project / rel).read_bytes()
+    assert b"Preset tasks body" in content
+    assert manifest.files[rel] == hashlib.sha256(content).hexdigest(), (
+        "manifest hash must match the preset-overridden skill (#5078)"
+    )
+    assert (project / plan_rel).read_bytes() == original_plan, "force re-init still replaces user edits"
+    assert manifest.files[plan_rel] == hashlib.sha256(original_plan).hexdigest()
+    result = CliRunner().invoke(app, ["integration", "status", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["modified_managed_files"] == 0
+    result = CliRunner().invoke(app, ["integration", "upgrade", "codex", "--script", "sh"])
+    assert result.exit_code == 0, result.output
+
+
+def test_init_force_keeps_recovered_markers(tmp_path, monkeypatch):
+    """Re-init resync must not re-record files registration left unchanged (#5078)."""
+    from specify_cli.integrations import get_integration
+    from specify_cli.integrations.manifest import IntegrationManifest
+
+    monkeypatch.chdir(tmp_path)
+    args = ["--integration", "codex", "--script", "sh", "--ignore-agent-tools", "--non-interactive"]
+    result = CliRunner().invoke(app, ["init", "proj", *args])
+    assert result.exit_code == 0, result.output
+    project = tmp_path / "proj"
+    integration_class = type(get_integration("codex"))
+    original_setup = integration_class.setup
+    rel = ".agents/skills/speckit-plan/SKILL.md"
+
+    def setup_with_recovered_file(self, project_root, manifest, *args, **kwargs):
+        created = original_setup(self, project_root, manifest, *args, **kwargs)
+        manifest.record_existing(rel, recovered=True)
+        return created
+
+    monkeypatch.setattr(integration_class, "setup", setup_with_recovered_file)
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, ["init", "--here", "--force", *args])
+
+    assert result.exit_code == 0, result.output
+    assert IntegrationManifest.load("codex", project).is_recovered(rel)
+
+
+def _init_args(key: str) -> list[str]:
+    args = ["--integration", key, "--script", "sh", "--ignore-agent-tools", "--non-interactive"]
+    if key == "generic":
+        args += ["--integration-options", "--commands-dir .myagent/commands/"]
+    return args
+
+
+def _fail_init_at(monkeypatch, failure: str, key: str) -> None:
+    """Make ``init`` raise after setup(), at its manifest save, or at its state write."""
+    from specify_cli.integrations import _commands, get_integration
+    from specify_cli.integrations.manifest import IntegrationManifest
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    if failure == "setup":
+        integration_class = type(get_integration(key))
+        real_setup = integration_class.setup
+
+        def setup(self, *args, **kwargs):
+            real_setup(self, *args, **kwargs)
+            fail()
+
+        monkeypatch.setattr(integration_class, "setup", setup)
+    elif failure == "manifest":
+        real_save = IntegrationManifest.save
+
+        def save(self, *args, **kwargs):
+            if self.key == key:
+                fail()
+            return real_save(self, *args, **kwargs)
+
+        monkeypatch.setattr(IntegrationManifest, "save", save)
+    elif failure == "manifest-write":
+        from specify_cli.integrations import manifest as manifest_module
+
+        real_mkstemp = manifest_module.tempfile.mkstemp
+
+        def mkstemp(*args, **kwargs):
+            prefix = kwargs.get("prefix", args[1] if len(args) > 1 else "")
+            if f".{key}.manifest.json." in str(prefix):
+                fail()
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(manifest_module.tempfile, "mkstemp", mkstemp)
+    else:
+        monkeypatch.setattr(_commands, "_write_integration_json", fail)
+
+
+def _existing_target(tmp_path: Path, monkeypatch, existing: str, key: str) -> Path:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "README.md").write_text("user file\n", encoding="utf-8")
+    # A user settings file some integrations merge into (Copilot).
+    (project / ".vscode").mkdir()
+    (project / ".vscode" / "settings.json").write_text('{"editor.tabSize": 2}\n', encoding="utf-8")
+    if existing == "project":
+        monkeypatch.chdir(project)
+        result = CliRunner().invoke(app, ["init", "--here", "--force", *_init_args(key)])
+        assert result.exit_code == 0, result.output
+    return project
+
+
+@pytest.mark.parametrize("existing", ["project", "plain"])
+@pytest.mark.parametrize("failure", ["setup", "manifest", "manifest-write", "state"])
+def test_init_here_rolls_back_when_it_fails_before_committing(tmp_path, monkeypatch, existing, failure):
+    """``init --here`` that fails before its manifest and state commit restores the directory."""
+    project = _existing_target(tmp_path, monkeypatch, existing, "claude")
+    if existing == "project":
+        skills = project / ".claude" / "skills"
+        (skills / "speckit-plan" / "SKILL.md").write_text("# user customization\n", encoding="utf-8")
+        (skills / "speckit-tasks" / "SKILL.md").unlink()
+        (skills / "speckit-tasks").rmdir()
+    before = _tree(project)
+    _fail_init_at(monkeypatch, failure, "claude")
+
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, ["init", "--here", "--force", *_init_args("claude")])
+
+    assert result.exit_code != 0
+    assert "disk full" in result.output
+    assert _tree(project) == before
+
+
+def _builtin_keys() -> list[str]:
+    from specify_cli.integrations._lifecycle import BUILTIN_INTEGRATION_KEYS
+
+    return sorted(BUILTIN_INTEGRATION_KEYS)
+
+
+@pytest.mark.parametrize("existing", ["project", "plain"])
+@pytest.mark.parametrize("key", _builtin_keys())
+def test_init_here_rolls_back_a_failed_setup_for_every_builtin(
+    tmp_path, monkeypatch, key, existing, _isolate_home,
+):
+    """No built-in integration writes outside what the init journal can restore."""
+    import json as _json
+
+    project = _existing_target(tmp_path, monkeypatch, existing, key)
+    manifest = project / ".specify" / "integrations" / f"{key}.manifest.json"
+    if manifest.exists():
+        # A user edit to a generated file shows whether setup() rewrote it.
+        for relative in sorted(_json.loads(manifest.read_text(encoding="utf-8"))["files"]):
+            (project / relative).write_text("user edit\n", encoding="utf-8")
+            break
+    home_skills = _isolate_home / ".hermes" / "skills"
+    if key == "hermes" and existing == "project":
+        # Hermes writes its skills under the home directory, not the project.
+        customized = sorted(home_skills.rglob("SKILL.md"))[0]
+        customized.write_text("# user customization\n", encoding="utf-8")
+    before = _tree(project)
+    before_home = _tree(_isolate_home)
+    _fail_init_at(monkeypatch, "setup", key)
+
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, ["init", "--here", "--force", *_init_args(key)])
+
+    assert result.exit_code != 0
+    assert "disk full" in result.output
+    assert _tree(project) == before
+    assert _tree(_isolate_home) == before_home
+    if key == "hermes" and existing == "project":
+        assert customized.read_text(encoding="utf-8") == "# user customization\n"
+
+
+# Bob's and Copilot's default layouts never call list_command_templates().
+@pytest.mark.parametrize("key", [key for key in _builtin_keys() if key not in {"bob", "copilot"}])
+def test_init_here_rollback_removes_a_commands_dir_created_before_the_first_write(
+    tmp_path, monkeypatch, key, _isolate_home,
+):
+    """A setup() that fails after creating its commands directory leaves none of it behind."""
+    from specify_cli.integrations import get_integration
+
+    project = _existing_target(tmp_path, monkeypatch, "plain", key)
+    before = _tree(project)
+    before_home = _tree(_isolate_home)
+    # Reading the first template fails after setup() has created the directory.
+    missing = tmp_path / "templates" / "plan.md"
+    monkeypatch.setattr(type(get_integration(key)), "list_command_templates", lambda self: [missing])
+
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, ["init", "--here", "--force", *_init_args(key)])
+
+    assert result.exit_code != 0
+    assert _tree(project) == before
+    # Hermes creates its skills directory, and its parents, under the home directory.
+    assert _tree(_isolate_home) == before_home
+
+
+@pytest.mark.parametrize("key", ["generic", "gemini", "forge", "rovodev"])
+def test_init_here_rollback_keeps_an_empty_directory_it_did_not_create(tmp_path, monkeypatch, key):
+    """Rollback removes only the directories its own operation created, not every new empty one."""
+    from specify_cli.integrations import get_integration
+
+    project = _existing_target(tmp_path, monkeypatch, "plain", key)
+    before_files, before_directories = _tree(project)
+    folder = ".myagent/commands" if key == "generic" else get_integration(key).config["folder"]
+    unrelated = project / folder / "user-notes"
+    missing = tmp_path / "templates" / "plan.md"
+
+    def templates(self):
+        # Another process creates an empty directory under a journal scope
+        # after the census, then setup() fails before its first write.
+        unrelated.mkdir(parents=True, exist_ok=True)
+        return [missing]
+
+    monkeypatch.setattr(type(get_integration(key)), "list_command_templates", templates)
+
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, ["init", "--here", "--force", *_init_args(key)])
+
+    assert result.exit_code != 0
+    assert unrelated.is_dir()
+    kept = {
+        path.relative_to(project).as_posix()
+        for path in (unrelated, *unrelated.parents) if project in path.parents
+    }
+    assert _tree(project) == (before_files, before_directories | kept)
+
+
+def test_init_here_runs_unjournalled_when_an_existing_generic_output_is_a_symlink(tmp_path, monkeypatch):
+    """An untracked commands directory holding a symlinked output initializes as before."""
+    project = _existing_target(tmp_path, monkeypatch, "plain", "generic")
+    commands = project / ".myagent" / "commands"
+    commands.mkdir(parents=True)
+    target = project / "shared-plan.md"
+    target.write_text("user plan\n", encoding="utf-8")
+    _symlink_or_skip(commands / "speckit.plan.md", target)
+
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, ["init", "--here", "--force", *_init_args("generic")])
+
+    assert result.exit_code == 0, result.output
+    assert (commands / "speckit.plan.md").is_symlink()
+
+
+def test_init_here_runs_unjournalled_when_a_scope_is_a_symlink(tmp_path, monkeypatch):
+    """A layout the journal cannot cover keeps initializing as it did before."""
+    project = _existing_target(tmp_path, monkeypatch, "project", "claude")
+    shared = tmp_path / "shared-extensions"
+    shared.mkdir()
+    extensions = project / ".specify" / "extensions"
+    if extensions.exists():
+        shutil.rmtree(extensions)
+    _symlink_or_skip(extensions, shared, directory=True)
+    from specify_cli.integrations import _lifecycle
+
+    entered = []
+    real_journalled = _lifecycle._journalled
+
+    def journalled(*args, **kwargs):
+        entered.append(args[0])
+        return real_journalled(*args, **kwargs)
+
+    monkeypatch.setattr(_lifecycle, "_journalled", journalled)
+
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(app, ["init", "--here", "--force", *_init_args("claude")])
+
+    assert result.exit_code == 0, result.output
+    assert extensions.is_symlink()
+    assert entered == []
+
+
+@pytest.mark.parametrize("failure", ["setup", "state"])
+def test_init_into_a_new_directory_removes_it_when_it_fails(tmp_path, monkeypatch, failure):
+    """A fresh ``init <name>`` keeps cleaning up the directory it created."""
+    _fail_init_at(monkeypatch, failure, "claude")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(app, ["init", "proj", *_init_args("claude")])
+
+    assert result.exit_code != 0
+    assert "disk full" in result.output
+    assert not (tmp_path / "proj").exists()
+
+
+def test_init_force_registers_extensions_in_the_new_generic_commands_dir(tmp_path, monkeypatch):
+    """Re-registration after ``init --force`` follows the new ``--commands-dir``."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    base = ["--integration", "generic", "--script", "sh", "--ignore-agent-tools", "--non-interactive"]
+    result = CliRunner().invoke(
+        app, ["init", "--here", "--force", *base, "--integration-options", "--commands-dir .old/commands/"]
+    )
+    assert result.exit_code == 0, result.output
+    result = CliRunner().invoke(app, ["extension", "add", "git"])
+    assert result.exit_code == 0, result.output
+    old_artifacts = sorted((project / ".old" / "commands").glob("speckit.git.*"))
+    assert old_artifacts, "precondition: the extension registered into the first commands dir"
+    for artifact in old_artifacts:
+        artifact.unlink()
+
+    result = CliRunner().invoke(
+        app, ["init", "--here", "--force", *base, "--integration-options", "--commands-dir .new/commands/"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(path.name for path in (project / ".new" / "commands").glob("speckit.git.*")) == [
+        path.name for path in old_artifacts
+    ]
+    assert not list((project / ".old" / "commands").glob("speckit.git.*"))

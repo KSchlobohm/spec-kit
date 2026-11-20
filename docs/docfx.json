@@ -6,8 +6,16 @@
           "*.md",
           "toc.yml",
           "community/*.md",
-          "concepts/*.md",
+          "community/presets/*.md",
+          "bundles/*.md",
+          "extensions/*.md",
           "guides/*.md",
+          "how-to/*.md",
+          "overview/*.md",
+          "integrations/*.md",
+          "presets/*.md",
+          "workflows/*.md",
+          "workflow-steps/*.md",
           "reference/*.md",
           "install/*.md"
         ]
@@ -26,7 +34,8 @@
     "resource": [
       {
         "files": [
-          "images/**"
+          "images/**",
+          "assets/**"
         ]
       },
       {

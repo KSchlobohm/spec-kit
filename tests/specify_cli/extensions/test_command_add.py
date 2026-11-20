@@ -40,6 +40,109 @@ from tests.specify_cli.extensions._helpers import (
 class TestExtensionAddCLI:
     """CLI tests for ``specify extension add``."""
 
+    @pytest.mark.parametrize(
+        ("agent", "skills_dir"),
+        [("codex", ".agents/skills"), ("claude", ".claude/skills")],
+    )
+    @pytest.mark.parametrize("case", ["complete", "missing-one", "missing-all", "ignored"])
+    def test_add_dev_reports_missing_command_files(
+        self, extension_dir, project_dir, valid_manifest_data, monkeypatch, agent, skills_dir, case
+    ):
+        provides = valid_manifest_data["provides"]
+        provides["commands"].append({
+            "name": "speckit.test-ext.second",
+            "file": "commands/second.md",
+            "description": "Second test command",
+        })
+        (extension_dir / "extension.yml").write_text(
+            yaml.safe_dump(valid_manifest_data), encoding="utf-8"
+        )
+        if case in {"complete", "ignored"}:
+            (extension_dir / "commands/second.md").write_text(
+                "---\ndescription: Second test command\n---\n\nSecond command\n",
+                encoding="utf-8",
+            )
+        if case == "ignored":
+            (extension_dir / ".extensionignore").write_text("commands/second.md\n", encoding="utf-8")
+        if case == "missing-all":
+            (extension_dir / "commands/hello.md").unlink()
+
+        write_listing_project_options(project_dir, {"ai": agent, "ai_skills": True})
+        with monkeypatch.context() as project_context:
+            project_context.chdir(project_dir)
+            result = CliRunner().invoke(app, ["extension", "add", "--dev", str(extension_dir)])
+        output = strip_ansi(result.output)
+
+        assert result.exit_code == 0, output
+        assert "Extension installed successfully" in output
+        assert ("Provided commands:" in output) == (case != "missing-all")
+        assert ("Command files missing:" in output) == (case != "complete")
+        for command in provides["commands"]:
+            name = command["name"]
+            filename = command["file"]
+            skill_name = name.replace(".", "-")
+            available = case == "complete" or (case != "missing-all" and name.endswith(".hello"))
+            assert (project_dir / skills_dir / skill_name / "SKILL.md").is_file() == available
+            assert (f"• {skill_name} - " in output) == available
+            assert (f"• {name} ({filename})" in output) == (not available)
+
+    @pytest.mark.parametrize(
+        ("config", "warns"),
+        [
+            pytest.param({}, False, id="undeclared"),
+            pytest.param({"config": []}, False, id="empty"),
+            pytest.param(
+                {"config": [{"name": "test-ext-config.yml", "template": "missing.yml"}]},
+                True,
+                id="missing-template",
+            ),
+        ],
+    )
+    def test_add_dev_warns_only_when_config_scaffolding_fails(
+        self, extension_dir, project_dir, valid_manifest_data, config, warns
+    ):
+        valid_manifest_data["provides"].update(config)
+        (extension_dir / "extension.yml").write_text(
+            yaml.safe_dump(valid_manifest_data), encoding="utf-8"
+        )
+
+        with patch.object(Path, "cwd", return_value=project_dir):
+            result = CliRunner().invoke(app, ["extension", "add", "--dev", str(extension_dir)])
+
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "Extension installed successfully" in output
+        assert ("Configuration may be required" in output) == warns, output
+        assert ("Config templates not scaffolded" in output) == warns, output
+
+    @pytest.mark.parametrize("command", [
+        pytest.param(["speckit.test-ext.hello"], id="list"),
+        pytest.param({"name": "speckit.test-ext.hello"}, id="mapping"),
+    ])
+    def test_add_dev_rejects_invalid_hook_command_before_writing_files(
+        self, extension_dir, project_dir, command
+    ):
+        """Malformed hook commands must leave no installed artifacts (#5080)."""
+        manifest_path = extension_dir / "extension.yml"
+        data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        data["hooks"]["after_tasks"]["command"] = command
+        manifest_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        agent_dir = project_dir / ".claude"
+        (agent_dir / "skills").mkdir(parents=True)
+        before = set(agent_dir.rglob("*"))
+
+        with patch.object(Path, "cwd", return_value=project_dir):
+            result = CliRunner().invoke(app, ["extension", "add", "--dev", str(extension_dir)])
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit), repr(result.exception)
+        output = strip_ansi(result.output)
+        assert "after_tasks" in output and "'command'" in output, output
+        assert "Traceback" not in output
+        assert not (project_dir / ".specify/extensions/test-ext").exists()
+        assert set(agent_dir.rglob("*")) == before
+        assert ExtensionRegistry(project_dir / ".specify/extensions").get("test-ext") is None
+
     def test_add_dev_links_copilot_agent_when_supported(
         self, extension_dir, project_dir, temp_dir
     ):
@@ -372,7 +475,8 @@ class TestExtensionAddCLI:
         # It must not emit the space-containing display name as the command target.
         assert "add Jira Integration --from" not in output
 
-    def test_add_discovery_only_error_neutralizes_unsafe_id(self, tmp_path):
+    @pytest.mark.parametrize("malicious_id", ["foo; rm -rf ~", "foo\n"])
+    def test_add_discovery_only_error_neutralizes_unsafe_id(self, tmp_path, malicious_id):
         """A catalog-controlled ID with shell metacharacters must never be
         interpolated into the suggested command; it is replaced by a literal
         placeholder so copying the command can't execute injected shell text."""
@@ -385,7 +489,6 @@ class TestExtensionAddCLI:
         (project_dir / ".specify").mkdir()
         (project_dir / ".specify" / "extensions").mkdir(parents=True)
 
-        malicious_id = "foo; rm -rf ~"
         mock_catalog = MagicMock()
         mock_catalog.get_extension_info.return_value = {
             "id": malicious_id,
@@ -694,6 +797,7 @@ class TestExtensionAddCLI:
              patch("specify_cli.authentication.http.open_url", return_value=FakeResponse(_MINIMAL_ZIP_BYTES)), \
              patch("specify_cli.extensions._commands._safe_open_download_zip", side_effect=_open_test_download_zip), \
              patch.object(ExtensionManager, "install_from_zip", fake_install_from_zip), \
+             patch.object(ExtensionManager, "scaffold_config", return_value=([], [], ["test-ext-config.yml"])), \
              patch.object(ExtensionRegistry, "get", return_value={}):
             result = runner.invoke(
                 app,
@@ -846,6 +950,69 @@ class TestExtensionAddCLI:
         assert result.exit_code == 1
         assert "exceeds maximum size" in result.output
         install.assert_not_called()
+
+    def test_add_from_url_without_extension_name(self, tmp_path):
+        """``extension add --from <url>`` works with no positional name (#1)."""
+        project_dir = tmp_path / "test-project"
+        project_dir.mkdir()
+        (project_dir / ".specify").mkdir()
+        url = "https://example.com/ext.zip"
+        seen = {}
+
+        def fake_install_from_url(manager, root, from_url, speckit_version, **kwargs):
+            seen["url"] = from_url
+            return SimpleNamespace(
+                id="x", name="X", version="1.0.0", description="",
+                warnings=[], commands=[], hooks=[],
+            )
+
+        with patch.object(Path, "cwd", return_value=project_dir), \
+             patch("typer.confirm", return_value=True), \
+             patch("specify_cli.extensions._commands.install_extension_from_url", side_effect=fake_install_from_url):
+            result = CliRunner().invoke(app, ["extension", "add", "--from", url], catch_exceptions=True)
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert "Missing argument" not in output
+        assert seen["url"] == url
+        assert "Extension installed successfully" in output
+
+    def test_add_without_name_or_source_errors_clearly(self, tmp_path):
+        """No name and no --from prints a clear error and installs nothing."""
+        project_dir = tmp_path / "test-project"
+        project_dir.mkdir()
+        (project_dir / ".specify").mkdir()
+
+        with patch.object(Path, "cwd", return_value=project_dir), \
+             patch.object(ExtensionManager, "install_from_zip") as install_zip, \
+             patch.object(ExtensionManager, "install_from_directory") as install_dir:
+            result = CliRunner().invoke(app, ["extension", "add"], catch_exceptions=True)
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 1, output
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Missing extension name or source" in output
+        assert "--from <url>" in output
+        assert "Traceback" not in output
+        install_zip.assert_not_called()
+        install_dir.assert_not_called()
+
+    def test_add_dev_without_path_errors_clearly(self, tmp_path):
+        """``--dev`` with no path is rejected instead of falling through."""
+        project_dir = tmp_path / "test-project"
+        project_dir.mkdir()
+        (project_dir / ".specify").mkdir()
+
+        with patch.object(Path, "cwd", return_value=project_dir):
+            result = CliRunner().invoke(
+                app,
+                ["extension", "add", "--dev", "--from", "https://example.com/ext.zip"],
+                catch_exceptions=True,
+            )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 1, output
+        assert "--dev requires the path" in output
 
     def test_add_from_url_resolves_ghes_release_asset(self, tmp_path):
         """A GHES release-download URL resolves to /api/v3 with octet-stream Accept."""

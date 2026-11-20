@@ -19,6 +19,7 @@ from tests.parity_helpers import (
     make_repo,
     normalize_repo_paths,
     ps_cmd,
+    ps_legacy_stdout_cmd,
     py_cmd,
     run,
     write_feature_json,
@@ -58,6 +59,40 @@ def _setup_repo(tmp_path: Path, name: str = "proj", template: bool = True) -> Pa
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     return _setup_repo(tmp_path)
+
+
+def test_python_json_preserves_non_ascii_feature_on_legacy_stdout(repo: Path) -> None:
+    feature = repo / "specs/001-功能"
+    feature.mkdir()
+    write_feature_json(repo, "specs/001-功能")
+    env = clean_env()
+    env["PYTHONIOENCODING"] = "cp1252"
+
+    result = run(py_cmd(repo, SCRIPT, "--json"), repo, env)
+
+    assert result.returncode == 0, result.stderr
+    payload = json_stdout(result)
+    assert payload["BRANCH"] == "001-功能"
+    assert Path(payload["FEATURE_DIR"]) == feature
+    assert Path(payload["FEATURE_SPEC"]) == feature / "spec.md"
+    assert Path(payload["IMPL_PLAN"]) == feature / "plan.md"
+    template = repo / ".specify" / "templates" / "plan-template.md"
+    assert (feature / "plan.md").read_bytes() == template.read_bytes()
+
+
+@pytest.mark.skipif(not HAS_POWERSHELL, reason="no PowerShell available")
+def test_powershell_json_preserves_non_ascii_feature_on_legacy_stdout(repo: Path) -> None:
+    feature = repo / "specs/001-功能"
+    feature.mkdir()
+    write_feature_json(repo, "specs/001-功能")
+
+    result = run(ps_legacy_stdout_cmd(repo, SCRIPT, "-Json"), repo)
+
+    assert result.returncode == 0, result.stderr
+    payload = json_stdout(result)
+    assert payload["BRANCH"] == "001-功能"
+    assert Path(payload["FEATURE_DIR"]) == feature
+    assert Path(payload["IMPL_PLAN"]) == feature / "plan.md"
 
 
 @pytest.mark.parametrize("port", PORTS)
